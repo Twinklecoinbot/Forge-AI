@@ -1,0 +1,29 @@
+---
+description: Never inspect user projects, prompts, chats, or training data inside Forge AI
+alwaysApply: true
+---
+
+# Forge AI — user content privacy
+
+Help build and fix the **Forge AI product codebase** end to end.
+
+You have **no right** to check, open, quote, summarize, or learn the user's:
+
+- New/generated **projects** and project file contents they create in Forge
+- **Prompts**, chat transcripts, and composer text
+- **training_dataset.jsonl** / learning logs / Accept–Reject records
+- Local workspace folders (e.g. Documents/Forge AI Projects), VFS dumps, or `forge.projects` / `forge.chats` / secrets in localStorage or `.env.local`
+
+## Allowed
+
+- Edit Forge AI **app source** under `src/`, workflows, configs, docs that ship with the product
+- Debug product bugs using **synthetic / placeholder** examples only
+- Improve privacy, encryption, and isolation features when asked
+
+## Forbidden
+
+- Reading or grepping user project trees, chat JSON, or training JSONL “to understand context”
+- Asking the user to paste private prompts/projects unless they volunteer for a specific bug
+- Committing or uploading user workspace content
+
+If a task seems to require user content, ask them to describe the **symptom** without sharing prompts or project files, or use redacted fixtures.

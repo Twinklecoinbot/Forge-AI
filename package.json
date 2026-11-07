@@ -1,0 +1,74 @@
+{
+  "name": "forge-ai",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Forge AI — standalone AI code generation command center",
+  "author": "Forge AI",
+  "license": "MIT",
+  "main": "src/main/main.js",
+  "scripts": {
+    "dev": "concurrently -k \"vite\" \"wait-on tcp:5173 && electron .\"",
+    "dev:web": "vite",
+    "preview": "vite preview --host --port 4173",
+    "build": "vite build",
+    "build:web": "cross-env GITHUB_PAGES=true vite build",
+    "electron": "electron .",
+    "dist": "vite build && electron-builder --win nsis",
+    "dist:dir": "vite build && electron-builder --win dir"
+  },
+  "dependencies": {
+    "@monaco-editor/react": "^4.7.0",
+    "fflate": "^0.8.3",
+    "lucide-react": "^0.511.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.5.2",
+    "autoprefixer": "^10.4.21",
+    "concurrently": "^9.1.2",
+    "cross-env": "^7.0.3",
+    "electron": "^36.3.1",
+    "electron-builder": "^26.0.12",
+    "postcss": "^8.5.4",
+    "tailwindcss": "^3.4.17",
+    "vite": "^6.3.5",
+    "wait-on": "^8.0.3"
+  },
+  "build": {
+    "appId": "com.forgeai.desktop",
+    "productName": "Forge AI",
+    "buildVersion": "1.0.0",
+    "artifactName": "Forge-AI-Setup.${ext}",
+    "files": [
+      "dist/**/*",
+      "src/main/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "src/renderer/public/logos/icon.png"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": false,
+      "runAfterFinish": true,
+      "deleteAppDataOnUninstall": false,
+      "artifactName": "Forge-AI-Setup.${ext}",
+      "shortcutName": "Forge AI",
+      "createDesktopShortcut": "always",
+      "createStartMenuShortcut": true
+    }
+  }
+}

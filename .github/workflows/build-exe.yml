@@ -1,0 +1,117 @@
+name: Build EXE & Release
+
+# Fixed channel: always version 1.0.0 / tag v1.0.0 / latest
+# Every push OVERWRITES the same EXE URL — never creates v1.0.1, v2, etc.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-exe-main
+  cancel-in-progress: true
+
+env:
+  STABLE_VERSION: '1.0.0'
+  STABLE_TAG: v1.0.0
+  EXE_NAME: Forge-AI-Setup.exe
+
+jobs:
+  windows-exe:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Pin package version to 1.0.0
+        shell: pwsh
+        run: |
+          $pkg = Get-Content package.json -Raw | ConvertFrom-Json
+          $pkg.version = $env:STABLE_VERSION
+          ($pkg | ConvertTo-Json -Depth 100) | Set-Content package.json -Encoding utf8
+
+      - run: npm ci
+
+      - name: Build Windows installer (version locked)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm run dist
+
+      - name: Normalize installer filename
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Path release -Recurse -Filter "Forge-AI-Setup*.exe" | Select-Object -First 1
+          if (-not $exe) { throw "Forge-AI-Setup.exe not found in release/" }
+          Copy-Item $exe.FullName "release/$env:EXE_NAME" -Force
+          Get-Item "release/$env:EXE_NAME" | Format-List FullName, Length, LastWriteTime
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Forge-AI-Setup
+          path: release/Forge-AI-Setup.exe
+          if-no-files-found: error
+          overwrite: true
+
+      - name: Overwrite stable GitHub Release (same tag, same file)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${STABLE_TAG}"
+          FILE="release/${EXE_NAME}"
+          NOTES="Forge AI stable channel (v${STABLE_VERSION}).
+
+          This release is **replaced on every push** to \`main\`. Version stays **${STABLE_VERSION}** until you change \`package.json\` intentionally.
+
+          - EXE (always same URL): https://github.com/${{ github.repository }}/releases/latest/download/${EXE_NAME}
+          - Web (always same URL): https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
+          "
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Updating existing release $TAG (clobber asset)…"
+            # Remove previous asset with same name if present, then upload
+            ASSET_ID=$(gh api "repos/${{ github.repository }}/releases/tags/${TAG}" --jq ".assets[] | select(.name==\"${EXE_NAME}\") | .id" || true)
+            if [ -n "${ASSET_ID}" ]; then
+              gh api -X DELETE "repos/${{ github.repository }}/releases/assets/${ASSET_ID}" || true
+            fi
+            gh release upload "$TAG" "$FILE" --clobber
+            gh release edit "$TAG" \
+              --title "Forge AI v${STABLE_VERSION} (stable)" \
+              --notes "$NOTES" \
+              --latest
+          else
+            echo "Creating stable release $TAG once…"
+            gh release create "$TAG" "$FILE" \
+              --title "Forge AI v${STABLE_VERSION} (stable)" \
+              --notes "$NOTES" \
+              --latest
+          fi
+
+          echo "Published: https://github.com/${{ github.repository }}/releases/latest/download/${EXE_NAME}"
+
+      - name: Summary
+        shell: bash
+        run: |
+          OWNER="${{ github.repository_owner }}"
+          REPO="${{ github.event.repository.name }}"
+          EXE_URL="https://github.com/${OWNER}/${REPO}/releases/latest/download/${EXE_NAME}"
+          LIVE="https://${OWNER}.github.io/${REPO}/"
+          {
+            echo "## Stable channel (no new versions)"
+            echo ""
+            echo "| Channel | URL |"
+            echo "|---|---|"
+            echo "| EXE | ${EXE_URL} |"
+            echo "| Web | ${LIVE} |"
+            echo ""
+            echo "Version locked at **${STABLE_VERSION}** / tag \`${STABLE_TAG}\`. Push = overwrite, not duplicate."
+          } >> "$GITHUB_STEP_SUMMARY"

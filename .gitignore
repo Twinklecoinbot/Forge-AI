@@ -1,0 +1,17 @@
+node_modules/
+dist/
+release/
+docs/
+.env
+.env.local
+*.log
+.DS_Store
+workspace/
+**/training_dataset.jsonl
+.forge/
+# Never commit user runtime content
+**/Forge AI Projects/
+# Local agent scratch (keep committed rules only via explicit path if needed)
+.cursor/**/*
+!.cursor/rules/
+!.cursor/rules/**
