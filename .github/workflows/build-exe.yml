@@ -48,10 +48,15 @@ jobs:
       - name: Normalize installer filename
         shell: pwsh
         run: |
-          $exe = Get-ChildItem -Path release -Recurse -Filter "Forge-AI-Setup*.exe" | Select-Object -First 1
+          $target = Join-Path "release" $env:EXE_NAME
+          $exe = Get-ChildItem -Path release -Recurse -Filter "Forge-AI-Setup*.exe" |
+            Where-Object { $_.Name -notlike "*.blockmap" } |
+            Select-Object -First 1
           if (-not $exe) { throw "Forge-AI-Setup.exe not found in release/" }
-          Copy-Item $exe.FullName "release/$env:EXE_NAME" -Force
-          Get-Item "release/$env:EXE_NAME" | Format-List FullName, Length, LastWriteTime
+          if ($exe.FullName -ne (Resolve-Path $target -ErrorAction SilentlyContinue).Path) {
+            Copy-Item $exe.FullName $target -Force
+          }
+          Get-Item $target | Format-List FullName, Length, LastWriteTime
 
       - uses: actions/upload-artifact@v4
         with:
