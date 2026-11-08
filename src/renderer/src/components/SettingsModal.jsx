@@ -1,6 +1,8 @@
-import { Github, Link2, Save, X } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { Github, Link2, RefreshCw, Save, X } from 'lucide-react';
 import { useForge } from '../store/ForgeContext.jsx';
 import { bridge } from '../services/bridge.js';
+import { DEFAULT_MODELS, detectLocalModels } from '../services/openRouterEngine.js';
 
 export default function SettingsModal() {
   const {
@@ -10,11 +12,62 @@ export default function SettingsModal() {
     saveSettings,
     saveCustomize,
     models,
+    localModels,
+    setLocalModels,
     isElectron,
     connectGithub,
     showToast
   } = useForge();
+  const [detecting, setDetecting] = useState(false);
+  const provider = settings.provider || 'openrouter';
+  const modelOptions = useMemo(
+    () => (provider === 'local' ? localModels || [] : models || DEFAULT_MODELS),
+    [provider, localModels, models]
+  );
+
+  useEffect(() => {
+    if (!settingsOpen || provider !== 'local') return;
+    if ((localModels || []).length) return;
+    (async () => {
+      setDetecting(true);
+      try {
+        const result = await detectLocalModels(settings.localBaseUrl || 'http://127.0.0.1:11434');
+        if (result.ok) {
+          setLocalModels(result.models);
+          if (!result.models.some((m) => m.id === settings.model)) {
+            await saveSettings({ model: result.models[0].id });
+          }
+        }
+      } catch {
+        /* ignore auto-detect */
+      } finally {
+        setDetecting(false);
+      }
+    })();
+  }, [settingsOpen, provider]);
+
   if (!settingsOpen) return null;
+
+  const detectNow = async () => {
+    setDetecting(true);
+    try {
+      const result = await detectLocalModels(settings.localBaseUrl || 'http://127.0.0.1:11434');
+      if (!result.ok) {
+        showToast(result.error || 'No local models found');
+        setLocalModels([]);
+        return;
+      }
+      setLocalModels(result.models);
+      if (!result.models.some((m) => m.id === settings.model)) {
+        await saveSettings({ model: result.models[0].id });
+      }
+      showToast(`Found ${result.models.length} local model${result.models.length === 1 ? '' : 's'}`);
+    } catch (e) {
+      showToast(e.message || 'Local detect failed');
+    } finally {
+      setDetecting(false);
+    }
+  };
 
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/50 p-6">
@@ -40,17 +93,80 @@ export default function SettingsModal() {
           onChange={(e) => saveSettings({ openRouterKey2: e.target.value })}
           className="mb-4 w-full rounded-md border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-[13px] outline-none"
         />
+
+        <label className="mb-1 block text-[12px] text-[var(--text-muted)]">AI server</label>
+        <div className="mb-3 grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            onClick={() =>
+              saveSettings({
+                provider: 'openrouter',
+                model: settings.model?.includes('/') ? settings.model : 'qwen/qwen3-coder:free'
+              })
+            }
+            className={`rounded-md border px-3 py-2 text-left text-[12.5px] ${
+              provider === 'openrouter'
+                ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200'
+                : 'border-[var(--border)] bg-[var(--bg)] text-[var(--text-muted)]'
+            }`}
+          >
+            <div className="font-medium text-[var(--text)]">OpenRouter (online)</div>
+            <div className="mt-0.5 text-[11px]">Cloud models via OpenRouter</div>
+          </button>
+          <button
+            type="button"
+            onClick={() => saveSettings({ provider: 'local' })}
+            className={`rounded-md border px-3 py-2 text-left text-[12.5px] ${
+              provider === 'local'
+                ? 'border-sky-500/40 bg-sky-500/10 text-sky-200'
+                : 'border-[var(--border)] bg-[var(--bg)] text-[var(--text-muted)]'
+            }`}
+          >
+            <div className="font-medium text-[var(--text)]">Local server model</div>
+            <div className="mt-0.5 text-[11px]">Ollama / OpenAI-compatible</div>
+          </button>
+        </div>
+
+        {provider === 'local' && (
+          <div className="mb-4 rounded-md border border-[var(--border)] bg-[var(--bg)] p-3">
+            <label className="mb-1 block text-[12px] text-[var(--text-muted)]">Local server URL</label>
+            <input
+              value={settings.localBaseUrl || 'http://127.0.0.1:11434'}
+              onChange={(e) => saveSettings({ localBaseUrl: e.target.value })}
+              placeholder="http://127.0.0.1:11434"
+              className="mb-2 w-full rounded-md border border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-2 text-[13px] outline-none"
+            />
+            <button
+              type="button"
+              disabled={detecting}
+              onClick={detectNow}
+              className="inline-flex items-center gap-2 rounded-md border border-[var(--border)] px-3 py-1.5 text-[12px] hover:bg-[var(--bg-hover)] disabled:opacity-50"
+            >
+              <RefreshCw size={13} className={detecting ? 'animate-spin' : ''} />
+              {detecting ? 'Detecting…' : 'Detect local models'}
+            </button>
+            {!modelOptions.length && (
+              <p className="mt-2 text-[11px] text-[var(--text-muted)]">
+                Start Ollama (or another local server), then detect models. Online OpenRouter stays unchanged until you switch back.
+              </p>
+            )}
+          </div>
+        )}
+
         <label className="mb-1 block text-[12px] text-[var(--text-muted)]">Default model</label>
         <select
           value={settings.model}
           onChange={(e) => saveSettings({ model: e.target.value })}
           className="mb-4 w-full rounded-md border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-[13px] outline-none"
         >
-          {models.map((m) => (
+          {modelOptions.map((m) => (
             <option key={m.id} value={m.id}>
               {m.label}
             </option>
           ))}
+          {!modelOptions.some((m) => m.id === settings.model) && settings.model ? (
+            <option value={settings.model}>{settings.model}</option>
+          ) : null}
         </select>
 
         <label className="mb-1 block text-[12px] text-[var(--text-muted)]">GitHub token</label>
@@ -99,7 +215,9 @@ export default function SettingsModal() {
         <div className="rounded-md border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-[12px] text-[var(--text-muted)]">
           Runtime: {isElectron ? 'Electron desktop (self-contained Forge engine)' : 'Browser preview'}
           <div className="mt-1">Workspace: {settings.workspaceRoot || 'browser-workspace'}</div>
-          <div className="mt-1 text-[11px]">Forge does not use Cursor IDE APIs or permissions.</div>
+          <div className="mt-1 text-[11px]">
+            Provider: {provider === 'local' ? 'Local server' : 'OpenRouter (online)'} · Forge does not use Cursor IDE APIs.
+          </div>
         </div>
 
         {isElectron && (
@@ -119,16 +237,17 @@ export default function SettingsModal() {
 
         <div className="mt-5 flex justify-end gap-2">
           <button
+            className="rounded-md border border-[var(--border)] px-3 py-2 text-[13px]"
             onClick={() => setSettingsOpen(false)}
-            className="rounded-md border border-[var(--border)] px-3 py-1.5 text-[12.5px]"
           >
             Close
           </button>
           <button
+            className="inline-flex items-center gap-2 rounded-md bg-[var(--accent)] px-3 py-2 text-[13px] text-white"
             onClick={async () => {
               await saveCustomize();
+              setSettingsOpen(false);
             }}
-            className="inline-flex items-center gap-1.5 rounded-md bg-[var(--text)] px-3 py-1.5 text-[12.5px] font-medium text-[var(--bg)]"
           >
             <Save size={14} /> Save
           </button>

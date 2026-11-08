@@ -50,7 +50,9 @@ export async function runForgeAgent({
   signal,
   onProgress,
   deploy,
-  mode: modeOverride
+  mode: modeOverride,
+  provider,
+  localBaseUrl
 }) {
   const intent = resolveIntentMode(prompt);
   const mode = modeOverride || intent.mode;
@@ -92,6 +94,8 @@ export async function runForgeAgent({
       prompt,
       contextFiles,
       signal,
+      provider,
+      localBaseUrl,
       onToken: (_t, full) => {
         // Stream short prose only — still no code fences dumped raw if huge
         const clipped = String(full || '').slice(0, 6000);
@@ -144,6 +148,8 @@ export async function runForgeAgent({
     contextFiles,
     attachments,
     signal,
+    provider,
+    localBaseUrl,
     onToken: (_t, full) => {
       const partial = extractFiles(full);
       emit({
@@ -179,6 +185,8 @@ export async function runForgeAgent({
       contextFiles: files.slice(0, 20),
       attachments: [],
       signal,
+      provider,
+      localBaseUrl,
       onToken: (_t, full) => {
         const partial = extractFiles(full);
         const merged = mergeFiles(files, partial);
@@ -328,18 +336,30 @@ export function arrangeProjectFiles(files = [], projectName = 'forge-app') {
   }
 
   const paths = [...map.keys()];
-  const hasHtml = paths.some((p) => /(^|\/)index\.html$/i.test(p) || p.endsWith('.html'));
-  const hasPkg = paths.some((p) => /(^|\/)package\.json$/i.test(p));
-  if (!hasHtml) {
-    map.set('index.html', {
-      path: 'index.html',
-      content: defaultPreviewHtml(projectName, hasPkg)
+  const htmlEntry = [...map.values()].find((f) => /(^|\/)index\.html$/i.test(f.path) || /\.html$/i.test(f.path));
+  const stub =
+    htmlEntry &&
+    /Project files are arranged|files are in the Code tab|Deployed with Forge AI/i.test(htmlEntry.content || '');
+  const hasRealHtml = htmlEntry && !stub && String(htmlEntry.content || '').length > 400;
+  if (!hasRealHtml) {
+    // Always ensure Preview/Pages get a professional interactive UI entry
+    map.set('index.html', { path: 'index.html', content: defaultPreviewHtml(projectName) });
+    if (![...map.keys()].some((p) => /(^|\/)styles\.css$/i.test(p))) {
+      map.set('styles.css', { path: 'styles.css', content: defaultPreviewCss() });
+    }
+    if (![...map.keys()].some((p) => /(^|\/)app\.js$/i.test(p))) {
+      map.set('app.js', { path: 'app.js', content: defaultPreviewJs(projectName) });
+    }
+  } else if (stub) {
+    map.set(htmlEntry.path || 'index.html', {
+      path: htmlEntry.path || 'index.html',
+      content: defaultPreviewHtml(projectName)
     });
   }
   if (!paths.some((p) => /(^|\/)README\.md$/i.test(p))) {
     map.set('README.md', {
       path: 'README.md',
-      content: `# ${projectName}\n\nBuilt with Forge AI Agent.\n\n## Run\n\n\`\`\`bash\nnpm install\nnpm run dev\n\`\`\`\n`
+      content: `# ${projectName}\n\nBuilt with Forge AI Agent.\n\nOpen \`index.html\` (Preview tab) or deploy for a live URL.\n\n## Dev\n\n\`\`\`bash\nnpm install\nnpm run dev\n\`\`\`\n`
     });
   }
 
@@ -372,34 +392,187 @@ function buildAgentDisplay({ projectName, files, previewUrl, deployResult, total
   return lines.join('\n');
 }
 
-function defaultPreviewHtml(name, hasPkg) {
+function defaultPreviewHtml(name) {
+  const title = escapeHtml(prettyName(name));
   return `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <title>${escapeHtml(name)}</title>
-  <style>
-    :root { color-scheme: dark; }
-    body { margin:0; font-family: ui-sans-serif, system-ui, sans-serif; background:#000; color:#e7e9ea;
-      min-height:100vh; display:grid; place-items:center; }
-    .card { max-width:440px; padding:28px; border:1px solid #2f3336; border-radius:16px; }
-    h1 { margin:0 0 8px; font-size:22px; }
-    p { margin:0; color:#71767b; line-height:1.5; font-size:14px; }
-    code { color:#1d9bf0; }
-  </style>
+  <title>${title}</title>
+  <link rel="stylesheet" href="styles.css"/>
 </head>
 <body>
-  <div class="card">
-    <h1>${escapeHtml(name)}</h1>
-    <p>${
-      hasPkg
-        ? 'Project files are in the Code tab. Preview updates as the agent writes HTML. For full frameworks run <code>npm install && npm run dev</code>.'
-        : 'Project files are arranged in the Code tab. This preview updates when the agent changes files.'
-    }</p>
-  </div>
+  <div class="bg"></div>
+  <header class="top">
+    <a class="brand" href="#">${title}</a>
+    <nav>
+      <a href="#features">Features</a>
+      <a href="#work">Product</a>
+      <a href="#cta" class="btn btn-sm">Get started</a>
+    </nav>
+  </header>
+  <main>
+    <section class="hero">
+      <p class="eyebrow">Built with Forge AI</p>
+      <h1>${title}</h1>
+      <p class="lede">A working product surface you can click, navigate, and iterate — Preview updates as the agent ships more files.</p>
+      <div class="actions">
+        <button class="btn" id="primary-cta" type="button">Launch demo</button>
+        <a class="btn btn-ghost" href="#features">See features</a>
+      </div>
+      <p class="status" id="status">Ready</p>
+    </section>
+    <section id="features" class="grid">
+      <article><h3>Interactive UI</h3><p>Real buttons, navigation, and state — not a placeholder card.</p></article>
+      <article><h3>Live preview</h3><p>Opens inside Forge Preview and on GitHub Pages after deploy.</p></article>
+      <article><h3>Full-stack ready</h3><p>Extend with API routes and data layers from the Code tab.</p></article>
+    </section>
+    <section id="work" class="panel">
+      <h2>Try it</h2>
+      <form id="demo-form" class="form">
+        <label>Your name<input name="name" placeholder="Alex" required/></label>
+        <label>Goal<textarea name="goal" rows="3" placeholder="What should this app do?"></textarea></label>
+        <button class="btn" type="submit">Save locally</button>
+      </form>
+      <ul id="notes" class="notes"></ul>
+    </section>
+    <section id="cta" class="cta">
+      <h2>Ship the next version in chat</h2>
+      <p>Ask Forge to refine this UI, add auth, or wire a backend — files update here automatically.</p>
+    </section>
+  </main>
+  <footer><span>${title}</span><span id="clock"></span></footer>
+  <script src="app.js"></script>
 </body>
 </html>`;
+}
+
+function defaultPreviewCss() {
+  return `:root {
+  color-scheme: dark;
+  --bg: #0b0d10;
+  --panel: #12161c;
+  --line: #243041;
+  --text: #e8eef7;
+  --muted: #8b9bb0;
+  --accent: #3d8bfd;
+  --accent-2: #20c997;
+  --radius: 16px;
+  --font: "Segoe UI", ui-sans-serif, system-ui, sans-serif;
+}
+* { box-sizing: border-box; }
+body { margin: 0; font-family: var(--font); background: var(--bg); color: var(--text); min-height: 100vh; }
+.bg {
+  position: fixed; inset: 0; z-index: -1;
+  background:
+    radial-gradient(900px 500px at 15% -10%, rgba(61,139,253,.28), transparent 60%),
+    radial-gradient(700px 420px at 90% 10%, rgba(32,201,151,.18), transparent 55%),
+    linear-gradient(180deg, #0b0d10, #0a1018 50%, #07090c);
+}
+.top {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 18px clamp(16px, 4vw, 48px); border-bottom: 1px solid var(--line);
+  backdrop-filter: blur(10px); position: sticky; top: 0; background: rgba(11,13,16,.72);
+}
+.brand { color: var(--text); text-decoration: none; font-weight: 700; letter-spacing: -.02em; }
+nav { display: flex; gap: 16px; align-items: center; }
+nav a { color: var(--muted); text-decoration: none; font-size: 14px; }
+nav a:hover { color: var(--text); }
+main { width: min(1080px, 100%); margin: 0 auto; padding: 28px 16px 80px; }
+.hero { padding: 56px 0 40px; }
+.eyebrow { color: var(--accent-2); text-transform: uppercase; letter-spacing: .12em; font-size: 12px; margin: 0 0 12px; }
+.hero h1 { margin: 0 0 14px; font-size: clamp(2rem, 5vw, 3.4rem); letter-spacing: -.04em; line-height: 1.05; max-width: 14ch; }
+.lede { margin: 0 0 24px; color: var(--muted); font-size: 1.05rem; max-width: 54ch; line-height: 1.6; }
+.actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.btn {
+  appearance: none; border: 0; border-radius: 999px; padding: 12px 18px; font-weight: 600;
+  background: linear-gradient(135deg, var(--accent), #6aa8ff); color: #041018; cursor: pointer;
+  text-decoration: none; display: inline-flex; align-items: center; justify-content: center;
+}
+.btn:hover { filter: brightness(1.05); }
+.btn-ghost { background: transparent; color: var(--text); border: 1px solid var(--line); }
+.btn-sm { padding: 8px 12px; font-size: 13px; }
+.status { margin-top: 14px; color: var(--accent-2); font-size: 13px; min-height: 1.2em; }
+.grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); margin: 18px 0 36px; }
+.grid article, .panel, .cta {
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  border: 1px solid var(--line); border-radius: var(--radius); padding: 20px;
+}
+.grid h3, .panel h2, .cta h2 { margin: 0 0 8px; letter-spacing: -.02em; }
+.grid p, .cta p { margin: 0; color: var(--muted); line-height: 1.55; }
+.form { display: grid; gap: 12px; margin-top: 12px; }
+label { display: grid; gap: 6px; font-size: 13px; color: var(--muted); }
+input, textarea {
+  width: 100%; border-radius: 12px; border: 1px solid var(--line); background: #0a0e14;
+  color: var(--text); padding: 10px 12px; font: inherit;
+}
+.notes { list-style: none; padding: 0; margin: 16px 0 0; display: grid; gap: 8px; }
+.notes li {
+  border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: #0a0e14; font-size: 14px;
+}
+footer {
+  border-top: 1px solid var(--line); padding: 16px clamp(16px, 4vw, 48px);
+  display: flex; justify-content: space-between; color: var(--muted); font-size: 12px;
+}
+@media (max-width: 640px) {
+  nav a:not(.btn) { display: none; }
+}`;
+}
+
+function defaultPreviewJs(name) {
+  const title = JSON.stringify(prettyName(name));
+  return `(() => {
+  const status = document.getElementById('status');
+  const clock = document.getElementById('clock');
+  const notes = document.getElementById('notes');
+  const form = document.getElementById('demo-form');
+  const cta = document.getElementById('primary-cta');
+  const key = 'forge-preview-notes:' + ${title};
+
+  const setStatus = (msg) => { if (status) status.textContent = msg; };
+  const tick = () => { if (clock) clock.textContent = new Date().toLocaleString(); };
+  tick();
+  setInterval(tick, 1000);
+
+  const load = () => {
+    try { return JSON.parse(localStorage.getItem(key) || '[]'); } catch { return []; }
+  };
+  const save = (items) => localStorage.setItem(key, JSON.stringify(items.slice(0, 20)));
+  const render = () => {
+    if (!notes) return;
+    const items = load();
+    notes.innerHTML = items.length
+      ? items.map((n) => '<li><strong>' + escapeHtml(n.name) + '</strong> — ' + escapeHtml(n.goal || '') + '</li>').join('')
+      : '<li>No notes yet — submit the form.</li>';
+  };
+  const escapeHtml = (s) => String(s || '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+  cta?.addEventListener('click', () => {
+    setStatus('Demo launched · ' + new Date().toLocaleTimeString());
+    document.getElementById('work')?.scrollIntoView({ behavior: 'smooth' });
+  });
+  form?.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const data = new FormData(form);
+    const entry = { name: String(data.get('name') || 'Guest'), goal: String(data.get('goal') || '') };
+    const next = [entry, ...load()];
+    save(next);
+    form.reset();
+    render();
+    setStatus('Saved locally · ' + entry.name);
+  });
+  render();
+  setStatus('Interactive preview ready');
+})();`;
+}
+
+function prettyName(name = 'Forge App') {
+  return String(name || 'Forge App')
+    .replace(/[-_]+/g, ' ')
+    .replace(/\b\w/g, (c) => c.toUpperCase())
+    .trim() || 'Forge App';
 }
 
 function escapeHtml(s = '') {

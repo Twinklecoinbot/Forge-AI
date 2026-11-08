@@ -70,14 +70,54 @@ function relativeTime(ts) {
   return `${Math.floor(d / 30)}mo`;
 }
 
+function readJson(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return fallback;
+    return JSON.parse(raw);
+  } catch {
+    return fallback;
+  }
+}
+
+/** Persist chats without huge file bodies (avoids quota wipe). */
+function slimChatsForStorage(chats = []) {
+  const ranked = [...chats].sort((a, b) => {
+    const am = a.messages?.length ? 1 : 0;
+    const bm = b.messages?.length ? 1 : 0;
+    if (am !== bm) return bm - am;
+    if (Boolean(a.pinned) !== Boolean(b.pinned)) return Number(b.pinned) - Number(a.pinned);
+    return (b.createdAt || 0) - (a.createdAt || 0);
+  });
+  return ranked.slice(0, 60).map((chat) => ({
+    ...chat,
+    messages: (chat.messages || []).slice(-80).map((m) => ({
+      ...m,
+      // Keep paths/stats for Files Changed UI; drop bulky source bodies
+      files: (m.files || []).map((f) => ({
+        path: f.path,
+        language: f.language,
+        content: typeof f.content === 'string' && f.content.length > 4000 ? '' : f.content
+      })),
+      content: typeof m.content === 'string' && m.content.length > 12000 ? m.content.slice(0, 12000) : m.content
+    }))
+  }));
+}
+
 export function ForgeProvider({ children }) {
   const [theme, setTheme] = useState(() => localStorage.getItem('forge.theme') || 'dark');
   const [view, setView] = useState('home');
   const [sidebarTab, setSidebarTab] = useState('chats');
-  const [chats, setChats] = useState([]);
+  const [chats, setChats] = useState(() => {
+    const stored = readJson('forge.chats', []);
+    return Array.isArray(stored) ? stored : [];
+  });
   const [activeChatId, setActiveChatId] = useState(() => localStorage.getItem('forge.activeChatId') || null);
-  const [projects, setProjects] = useState([]);
-  const [activeProjectId, setActiveProjectId] = useState(null);
+  const [projects, setProjects] = useState(() => {
+    const stored = readJson('forge.projects', []);
+    return Array.isArray(stored) ? stored : [];
+  });
+  const [activeProjectId, setActiveProjectId] = useState(() => localStorage.getItem('forge.activeProjectId') || null);
   const [openTabs, setOpenTabs] = useState([]);
   const [activeFile, setActiveFile] = useState(null);
   const [attachedPaths, setAttachedPaths] = useState([]);
@@ -90,9 +130,12 @@ export function ForgeProvider({ children }) {
     openRouterKey2: '',
     githubToken: '',
     model: 'qwen/qwen3-coder:free',
+    provider: 'openrouter',
+    localBaseUrl: 'http://127.0.0.1:11434',
     workspaceRoot: '',
     githubUser: null
   });
+  const [localModels, setLocalModels] = useState([]);
   const [workspaceMode, setWorkspaceMode] = useState('chat');
   const [browserUrl, setBrowserUrl] = useState('');
   const [composer, setComposer] = useState('');
@@ -110,6 +153,8 @@ export function ForgeProvider({ children }) {
   const lastPromptRef = useRef('');
   const projectsRef = useRef(projects);
   const activeProjectIdRef = useRef(activeProjectId);
+  const hydratedRef = useRef(false);
+  const chatsRef = useRef(chats);
 
   const activeProject = projects.find((p) => p.id === activeProjectId) || null;
   const files = activeProject?.files || [];
@@ -119,6 +164,9 @@ export function ForgeProvider({ children }) {
   useEffect(() => {
     projectsRef.current = projects;
   }, [projects]);
+  useEffect(() => {
+    chatsRef.current = chats;
+  }, [chats]);
   useEffect(() => {
     activeProjectIdRef.current = activeProjectId;
   }, [activeProjectId]);
@@ -158,15 +206,19 @@ export function ForgeProvider({ children }) {
         openRouterKey2: local.openRouterKey2 || seeded.openRouterKey2 || '',
         githubToken: local.githubToken || '',
         model: local.model || loaded.model || 'qwen/qwen3-coder:free',
+        provider: local.provider || loaded.provider || 'openrouter',
+        localBaseUrl: local.localBaseUrl || loaded.localBaseUrl || 'http://127.0.0.1:11434',
         workspaceRoot: loaded.workspaceRoot || s.workspaceRoot
       }));
       const savedProjectId = localStorage.getItem('forge.activeProjectId');
-      let restoredProjects = [];
-      try {
-        const persistedProjects = localStorage.getItem('forge.projects');
-        if (persistedProjects) restoredProjects = JSON.parse(persistedProjects) || [];
-      } catch {
-        restoredProjects = [];
+      let restoredProjects = Array.isArray(projectsRef.current) ? [...projectsRef.current] : [];
+      if (!restoredProjects.length) {
+        try {
+          const persistedProjects = localStorage.getItem('forge.projects');
+          if (persistedProjects) restoredProjects = JSON.parse(persistedProjects) || [];
+        } catch {
+          restoredProjects = [];
+        }
       }
       // Survive secret logout: fall back to durable Electron/userData meta + reload disk files
       if (!restoredProjects.length && Array.isArray(loaded.projectsMeta) && loaded.projectsMeta.length) {
@@ -230,26 +282,40 @@ export function ForgeProvider({ children }) {
           }
         }
       }
-      const persistedChats = localStorage.getItem('forge.chats');
       const savedChatId = localStorage.getItem('forge.activeChatId');
-      if (persistedChats) {
-        const parsed = JSON.parse(persistedChats);
-        if (parsed.length) {
-          setChats(parsed);
-          const projectId =
-            localStorage.getItem('forge.activeProjectId') || restoredProjects[0]?.id || null;
-          const projectChat = projectId && parsed.find((c) => c.projectId === projectId && !c.archived);
-          const keep =
-            projectChat?.id ||
-            (savedChatId && parsed.find((c) => c.id === savedChatId)?.id) ||
-            parsed.find((c) => c.messages?.length)?.id ||
-            parsed[0].id;
-          setActiveChatId(keep);
-          const keepChat = parsed.find((c) => c.id === keep);
-          setView(keepChat?.messages?.length ? 'agent' : 'home');
+      let parsedChats = Array.isArray(chatsRef.current) ? [...chatsRef.current] : [];
+      if (!parsedChats.length) {
+        try {
+          const persistedChats = localStorage.getItem('forge.chats');
+          if (persistedChats) parsedChats = JSON.parse(persistedChats) || [];
+        } catch {
+          parsedChats = [];
         }
+      }
+      // Durable Electron backup if localStorage was wiped
+      if (!parsedChats.length && Array.isArray(loaded.chatsMeta) && loaded.chatsMeta.length) {
+        parsedChats = loaded.chatsMeta;
+      }
+      if (parsedChats.length) {
+        setChats(parsedChats);
+        const projectId =
+          localStorage.getItem('forge.activeProjectId') || restoredProjects[0]?.id || null;
+        const projectChats = projectId
+          ? parsedChats.filter((c) => c.projectId === projectId && !c.archived)
+          : [];
+        // Prefer the project chat that still has history (never jump to an empty twin)
+        const projectChatWithHistory = projectChats.find((c) => c.messages?.length) || projectChats[0];
+        const keep =
+          projectChatWithHistory?.id ||
+          (savedChatId && parsedChats.find((c) => c.id === savedChatId && c.messages?.length)?.id) ||
+          (savedChatId && parsedChats.find((c) => c.id === savedChatId)?.id) ||
+          parsedChats.find((c) => c.messages?.length)?.id ||
+          parsedChats[0].id;
+        setActiveChatId(keep);
+        const keepChat = parsedChats.find((c) => c.id === keep);
+        setView(keepChat?.messages?.length ? 'agent' : 'home');
       } else if (restoredProjects.length) {
-        // Recreate one chat per restored project so work can continue after logout
+        // Only seed empty chats when nothing durable exists
         const rebuilt = restoredProjects.map((p) =>
           defaultChat({
             id: p.chatId || uid(),
@@ -271,6 +337,7 @@ export function ForgeProvider({ children }) {
       }
       const persistedPrompts = localStorage.getItem('forge.prompts');
       if (persistedPrompts) setPrompts(JSON.parse(persistedPrompts));
+      hydratedRef.current = true;
     })();
     return bridge.onTerminalStream((chunk) => setTerminal((t) => [...t, { id: uid(), ...chunk }]));
   }, []);
@@ -279,6 +346,7 @@ export function ForgeProvider({ children }) {
     localStorage.setItem('forge.prompts', JSON.stringify(prompts));
   }, [prompts]);
   useEffect(() => {
+    if (!hydratedRef.current && !projects.length) return;
     try {
       localStorage.setItem('forge.projects', JSON.stringify(projects));
       // Durable copy survives secret logout / browser clears of secrets only
@@ -302,10 +370,19 @@ export function ForgeProvider({ children }) {
     }
   }, [projects]);
   useEffect(() => {
+    // Never overwrite saved chats with the empty pre-hydrate state
+    if (!hydratedRef.current && chats.length === 0) return;
     try {
-      localStorage.setItem('forge.chats', JSON.stringify(chats.slice(0, 40)));
+      const slim = slimChatsForStorage(chats);
+      localStorage.setItem('forge.chats', JSON.stringify(slim));
+      bridge
+        .saveSettings({
+          chatsMeta: slim,
+          chatsUpdatedAt: Date.now()
+        })
+        .catch(() => {});
     } catch {
-      /* quota */
+      /* quota — keep previous durable copy */
     }
   }, [chats]);
   useEffect(() => {
@@ -342,7 +419,19 @@ export function ForgeProvider({ children }) {
       }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'n') {
         e.preventDefault();
-        newChat();
+        // Confirm before creating a fresh chat (same as sidebar New Chat)
+        const current = chatsRef.current.find((c) => c.id === (localStorage.getItem('forge.activeChatId') || ''));
+        if (current?.messages?.length || chatsRef.current.some((c) => c.messages?.length)) {
+          if (!window.confirm('Open a new chat? Your current chat stays saved in the sidebar.')) return;
+        }
+        const chat = defaultChat();
+        setChats((c) => [chat, ...c]);
+        setActiveChatId(chat.id);
+        setView('home');
+        setSidebarTab('chats');
+        setComposer('');
+        setAttachedPaths([]);
+        setAttachments([]);
       }
       if ((e.ctrlKey || e.metaKey) && e.key === ',') {
         e.preventDefault();
@@ -371,7 +460,9 @@ export function ForgeProvider({ children }) {
         openRouterKey: next.openRouterKey,
         openRouterKey2: next.openRouterKey2,
         githubToken: next.githubToken,
-        model: next.model
+        model: next.model,
+        provider: next.provider || 'openrouter',
+        localBaseUrl: next.localBaseUrl || 'http://127.0.0.1:11434'
       })
     );
   };
@@ -433,14 +524,34 @@ export function ForgeProvider({ children }) {
   };
 
   const newChat = () => {
-    const chat = defaultChat();
+    const chat = defaultChat(
+      activeProjectId
+        ? { title: activeProject?.name || 'New Chat', projectId: activeProjectId }
+        : {}
+    );
     setChats((c) => [chat, ...c]);
     setActiveChatId(chat.id);
+    if (activeProjectId) {
+      setProjects((ps) => ps.map((p) => (p.id === activeProjectId ? { ...p, chatId: chat.id } : p)));
+    }
     setView('home');
     setSidebarTab('chats');
     setComposer('');
     setAttachedPaths([]);
     setAttachments([]);
+  };
+
+  /** Confirm before creating an empty chat so history is never lost by accident. */
+  const requestNewChat = () => {
+    const hasHistory = Boolean(activeChat?.messages?.length);
+    if (hasHistory) {
+      const ok = window.confirm('Open a new chat? Your current chat stays saved in the sidebar.');
+      if (!ok) return;
+    } else if (chats.some((c) => c.messages?.length)) {
+      const ok = window.confirm('Open a new chat?');
+      if (!ok) return;
+    }
+    newChat();
   };
 
   /** Open chats home / current chat without creating a new one. */
@@ -454,13 +565,30 @@ export function ForgeProvider({ children }) {
       setView('home');
       return;
     }
+    const withHistory = chats.find((c) => !c.archived && c.messages?.length);
+    if (withHistory) {
+      setActiveChatId(withHistory.id);
+      setView('agent');
+      return;
+    }
     if (chats[0]) {
       setActiveChatId(chats[0].id);
       setView(chats[0].messages?.length ? 'agent' : 'home');
       return;
     }
-    // First-ever session: create one empty chat only when none exist
-    newChat();
+    // First-ever session only
+    const ok = window.confirm('No chats yet. Create a new chat?');
+    if (ok) newChat();
+  };
+
+  const renameProject = (projectId, name) => {
+    const next = String(name || '').trim();
+    if (!next) return;
+    setProjects((all) => all.map((p) => (p.id === projectId ? { ...p, name: next } : p)));
+    setChats((all) =>
+      all.map((c) => (c.projectId === projectId && (!c.messages?.length || c.title === activeProject?.name) ? { ...c, title: next } : c))
+    );
+    showToast(`Renamed to “${next}”`);
   };
 
   const editUserMessage = (message) => {
@@ -517,7 +645,8 @@ export function ForgeProvider({ children }) {
       setBrowserUrl(project.liveUrl || project.previewUrl);
     }
     setChats((all) => {
-      let chat = all.find((c) => c.projectId === project.id && !c.archived);
+      const bound = all.filter((c) => c.projectId === project.id && !c.archived);
+      let chat = bound.find((c) => c.messages?.length) || bound[0];
       let next = all;
       if (!chat) {
         chat = ensureProjectChat(project, all);
@@ -815,6 +944,8 @@ export function ForgeProvider({ children }) {
         apiKey: settings.openRouterKey,
         apiKeys: [settings.openRouterKey, settings.openRouterKey2],
         model: settings.model,
+        provider: settings.provider || 'openrouter',
+        localBaseUrl: settings.localBaseUrl || 'http://127.0.0.1:11434',
         rules,
         history,
         prompt: text || 'Investigate attached / imported files, rearrange if needed, and continue the app.',
@@ -955,7 +1086,12 @@ export function ForgeProvider({ children }) {
     const next = { ...settings, ...patch };
     setSettings(next);
     persistSecrets(next);
-    await bridge.saveSettings({ model: next.model, workspaceRoot: next.workspaceRoot });
+    await bridge.saveSettings({
+      model: next.model,
+      workspaceRoot: next.workspaceRoot,
+      provider: next.provider || 'openrouter',
+      localBaseUrl: next.localBaseUrl || 'http://127.0.0.1:11434'
+    });
   };
 
   const connectGithub = async (token) => {
@@ -1061,6 +1197,7 @@ export function ForgeProvider({ children }) {
       projectMenuOpen,
       setProjectMenuOpen,
       githubRepos,
+      setGithubRepos,
       toast,
       showToast,
       workspaceMode,
@@ -1073,8 +1210,10 @@ export function ForgeProvider({ children }) {
       archiveChat,
       deleteChat,
       newChat,
+      requestNewChat,
       openChatsHome,
       openProject,
+      renameProject,
       editUserMessage,
       newProject,
       deleteProject,
@@ -1088,6 +1227,8 @@ export function ForgeProvider({ children }) {
       connectGithub,
       publishToGithub,
       models: DEFAULT_MODELS,
+      localModels,
+      setLocalModels,
       isElectron: bridge.isElectron,
       runCommand: async (cmd) => {
         setTerminalOpen(true);
@@ -1227,7 +1368,8 @@ export function ForgeProvider({ children }) {
       workspaceMode,
       browserUrl,
       projectRoot,
-      learningBusy
+      learningBusy,
+      localModels
     ]
   );
 

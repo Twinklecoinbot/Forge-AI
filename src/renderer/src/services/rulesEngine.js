@@ -11,7 +11,7 @@ export const STARTER_RULES = [
     title: 'Default stack',
     enabled: true,
     body:
-      'Unless the user specifies otherwise, generate Next.js App Router + TypeScript + Tailwind (or React+Vite when lighter) with package.json, prisma/schema when a DB is needed, auth when asked, and a clear app/ tree. Include seed data so the UI matches their reference. You are Forge AI — standalone.'
+      'Always ship a professional interactive frontend first: index.html + styles.css + app.js that works in Forge Preview and GitHub Pages (no blank placeholder). Also add full-stack files when asked (API routes, package.json, database schema, auth). Prefer Next.js/Vite source in addition to the static entry when the user wants a framework. Include seed/demo data so the UI looks real. Obey saved Automations/rules. You are Forge AI — standalone.'
   },
   {
     id: 'quality',

@@ -31,11 +31,12 @@ export default function Sidebar() {
     chats,
     activeChatId,
     setActiveChatId,
-    newChat,
+    requestNewChat,
     openChatsHome,
     openProject,
     newProject,
     deleteProject,
+    renameProject,
     pickProjectFolder,
     createProjectOnDisk,
     importBrowserFolder,
@@ -66,6 +67,8 @@ export default function Sidebar() {
   const folderInputRef = useRef(null);
   const menuRef = useRef(null);
   const [creating, setCreating] = useState(null);
+  const [renamingId, setRenamingId] = useState(null);
+  const [renameValue, setRenameValue] = useState('');
   const [expanded, setExpanded] = useState(() => new Set());
 
   useEffect(() => {
@@ -113,7 +116,7 @@ export default function Sidebar() {
         <div className="flex-1" />
         <button
           className="grid h-8 w-8 place-items-center rounded-md text-[var(--text-muted)] hover:bg-[var(--bg-hover)]"
-          onClick={newChat}
+          onClick={requestNewChat}
           title="New chat"
         >
           <SquarePen size={15} />
@@ -241,15 +244,55 @@ export default function Sidebar() {
                   >
                     <ChevronRight size={12} className={isOpen ? 'rotate-90 transition' : 'transition'} />
                   </button>
+                  {renamingId === project.id ? (
+                    <form
+                      className="flex min-w-0 flex-1 items-center gap-1 pr-1"
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        renameProject?.(project.id, renameValue);
+                        setRenamingId(null);
+                      }}
+                    >
+                      <input
+                        autoFocus
+                        value={renameValue}
+                        onChange={(e) => setRenameValue(e.target.value)}
+                        onBlur={() => {
+                          renameProject?.(project.id, renameValue);
+                          setRenamingId(null);
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Escape') setRenamingId(null);
+                        }}
+                        className="min-w-0 flex-1 rounded border border-[var(--border)] bg-[var(--bg)] px-1.5 py-1 text-[12px] outline-none"
+                      />
+                    </form>
+                  ) : (
+                    <button
+                      className="flex min-w-0 flex-1 items-center gap-1.5 py-1.5 pr-1 text-left"
+                      onClick={() => openProject(project.id)}
+                      onDoubleClick={() => {
+                        setRenamingId(project.id);
+                        setRenameValue(project.name);
+                      }}
+                      title="Double-click to rename"
+                    >
+                      <Folder size={13} className="shrink-0 text-[var(--text-muted)]" />
+                      <span className="truncate font-medium">{project.name}</span>
+                      <span className="ml-auto text-[10px] text-[var(--text-muted)]">
+                        {relativeTime?.(project.arrangedAt || project.createdAt)}
+                      </span>
+                    </button>
+                  )}
                   <button
-                    className="flex min-w-0 flex-1 items-center gap-1.5 py-1.5 pr-1 text-left"
-                    onClick={() => openProject(project.id)}
+                    className="mr-0.5 hidden h-6 w-6 place-items-center text-[var(--text-muted)] hover:text-[var(--text)] group-hover:grid"
+                    title="Rename"
+                    onClick={() => {
+                      setRenamingId(project.id);
+                      setRenameValue(project.name);
+                    }}
                   >
-                    <Folder size={13} className="shrink-0 text-[var(--text-muted)]" />
-                    <span className="truncate font-medium">{project.name}</span>
-                    <span className="ml-auto text-[10px] text-[var(--text-muted)]">
-                      {relativeTime?.(project.arrangedAt || project.createdAt)}
-                    </span>
+                    <SquarePen size={11} />
                   </button>
                   <button
                     className="mr-1 hidden h-6 w-6 place-items-center text-[var(--text-muted)] hover:text-red-400 group-hover:grid"

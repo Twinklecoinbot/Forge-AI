@@ -11,12 +11,18 @@ const HARD_CONTRACT = `OUTPUT CONTRACT (non-negotiable):
 <<<END FILE>>>
 3. Forbidden in the response body (except inside FILE blocks): "Thinking Process", long architecture essays, step-by-step guides, "open VS Code", "create a folder", pseudo-code outlines without FILE blocks.
 4. After FILE blocks, add at most 6 short lines: Cause/summary + what you built. No source in that prose.
-5. Prefer a runnable project (package.json + app entry + UI). Include front-end and back-end when requested.`;
+5. ALWAYS ship a working interactive frontend that Forge Preview + GitHub Pages can open immediately:
+   - Required: index.html (complete professional UI — navigation, hero, real sections, forms/buttons that work with JS), styles.css, app.js
+   - Also emit backend/API files when the user asks full-stack (server routes, package.json scripts, schema).
+   - index.html must NOT be a placeholder card saying "files are in Code". It must look like a finished product UI.
+6. Obey every enabled user Automations/rules from the system prompt.`;
 
-const RETRY_USER = `FAILURE: your previous reply had ZERO <<<FILE path="...">>> blocks (or only a Thinking Process / guide).
+const RETRY_USER = `FAILURE: your previous reply had ZERO <<<FILE path="...">>> blocks (or only a Thinking Process / guide), OR missing a real index.html UI.
 That is unacceptable in Forge AI.
 
-Re-emit the FULL working project NOW using only FILE blocks. Start immediately with package.json, then the rest of the tree. No Thinking Process. No VS Code instructions. No essays.`;
+Re-emit the FULL working project NOW using only FILE blocks.
+MUST include: index.html (professional interactive UI), styles.css, app.js, plus any backend files needed.
+No Thinking Process. No VS Code instructions. No essays. No placeholder "files are in Code" pages.`;
 
 export async function runForgePrompt({
   apiKey,
@@ -28,7 +34,9 @@ export async function runForgePrompt({
   contextFiles,
   attachments,
   onToken,
-  signal
+  signal,
+  provider,
+  localBaseUrl
 }) {
   const skill = detectSkill(prompt) || (isBuildIntent(prompt) ? 'build' : null);
   const codingModel = preferCodingModel(model, skill);
@@ -87,6 +95,8 @@ export async function runForgePrompt({
     { role: 'user', content: userContent }
   ];
 
+  const providerOpts = { provider: provider || 'openrouter', localBaseUrl };
+
   let text = await completeChat({
     apiKey,
     apiKeys,
@@ -95,19 +105,20 @@ export async function runForgePrompt({
     stream: true,
     onToken,
     signal,
-    maxTokens: 12288
+    maxTokens: 12288,
+    ...providerOpts
   });
 
   let files = extractFiles(text);
   let retried = false;
 
-  if (!files.length || looksLikeGuideDump(text)) {
+  if (!files.length || looksLikeGuideDump(text) || !hasPreviewableUi(files)) {
     retried = true;
     onToken?.('\n', `${text}\n`);
     text = await completeChat({
       apiKey,
       apiKeys,
-      model: 'qwen/qwen3-coder:free',
+      model: provider === 'local' ? codingModel : 'qwen/qwen3-coder:free',
       messages: [
         ...baseMessages,
         { role: 'assistant', content: clip(text, 1500) },
@@ -116,7 +127,8 @@ export async function runForgePrompt({
       stream: true,
       onToken: (token, full) => onToken?.(token, full),
       signal,
-      maxTokens: 12288
+      maxTokens: 12288,
+      ...providerOpts
     });
     files = extractFiles(text);
   }
@@ -170,6 +182,14 @@ function clip(text, n) {
 }
 
 /** Guidance-only path — answers clearly, does NOT emit FILE blocks or build. */
+function hasPreviewableUi(files = []) {
+  const html = files.find((f) => /(^|\/)index\.html$/i.test(f.path) || /\.html$/i.test(f.path));
+  if (!html) return false;
+  const c = String(html.content || '');
+  if (/Project files are arranged|files are in the Code tab|Deployed with Forge AI/i.test(c)) return false;
+  return c.length > 400 && /<(main|section|nav|header|button|form)/i.test(c);
+}
+
 export async function runGuidePrompt({
   apiKey,
   apiKeys,
@@ -179,7 +199,9 @@ export async function runGuidePrompt({
   prompt,
   contextFiles,
   signal,
-  onToken
+  onToken,
+  provider,
+  localBaseUrl
 }) {
   const contextBlock = (contextFiles || [])
     .filter((file) => file && typeof file.content === 'string' && !String(file.content).startsWith('data:'))
@@ -215,7 +237,9 @@ export async function runGuidePrompt({
     stream: true,
     onToken,
     signal,
-    maxTokens: 4096
+    maxTokens: 4096,
+    provider: provider || 'openrouter',
+    localBaseUrl
   });
   return { text, files: [], mode: 'guide' };
 }

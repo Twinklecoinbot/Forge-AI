@@ -260,7 +260,9 @@ function AssistantReply({
       ) : null}
 
       {message.activity ? (
-        <div className="mb-2 text-[12px] text-[var(--text-muted)]">{message.activity}</div>
+        <div className="mb-2 text-[12px] text-[var(--text-muted)]">
+          <DiffColoredText text={message.activity} />
+        </div>
       ) : null}
 
       {message.error ? (
@@ -371,9 +373,11 @@ function RichText({ text }) {
     <>
       {parts.map((part, i) => {
         if (part.startsWith('**') && part.endsWith('**')) {
+          const inner = part.slice(2, -2);
+          const diffClass = diffToneClass(inner);
           return (
-            <strong key={i} className="font-semibold text-[var(--text)]">
-              {part.slice(2, -2)}
+            <strong key={i} className={`font-semibold ${diffClass || 'text-[var(--text)]'}`}>
+              {inner}
             </strong>
           );
         }
@@ -384,10 +388,41 @@ function RichText({ text }) {
             </code>
           );
         }
-        return <span key={i}>{part}</span>;
+        return (
+          <span key={i}>
+            <DiffColoredText text={part} />
+          </span>
+        );
       })}
     </>
   );
+}
+
+function DiffColoredText({ text }) {
+  const parts = String(text || '').split(/(\+\d+|-\d+)/g);
+  return parts.map((part, i) => {
+    if (/^\+\d+$/.test(part)) {
+      return (
+        <span key={i} className="font-medium text-emerald-400">
+          {part}
+        </span>
+      );
+    }
+    if (/^-\d+$/.test(part)) {
+      return (
+        <span key={i} className="font-medium text-red-400">
+          {part}
+        </span>
+      );
+    }
+    return <span key={i}>{part}</span>;
+  });
+}
+
+function diffToneClass(text = '') {
+  if (/^\+\d+$/.test(text)) return 'text-emerald-400';
+  if (/^-\d+$/.test(text)) return 'text-red-400';
+  return '';
 }
 
 function shortUrl(url = '') {

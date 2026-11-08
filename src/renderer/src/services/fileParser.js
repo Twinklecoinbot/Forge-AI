@@ -114,23 +114,39 @@ export function projectNameFromPrompt(text = '') {
 }
 
 export function previewHtml(files = []) {
+  const candidates = files.filter((f) => /\.html?$/i.test(f.path || ''));
   const htmlFile =
-    files.find((f) => f.path === 'index.html') ||
-    files.find((f) => f.path.endsWith('/index.html')) ||
-    files.find((f) => f.path.endsWith('.html'));
+    candidates.find((f) => f.path === 'index.html' && !isStubPreviewHtml(f.content)) ||
+    candidates.find((f) => f.path.endsWith('/index.html') && !isStubPreviewHtml(f.content)) ||
+    candidates.find((f) => !isStubPreviewHtml(f.content)) ||
+    candidates.find((f) => f.path === 'index.html') ||
+    candidates[0];
   if (!htmlFile) return null;
   const css = files
-    .filter((f) => f.path.endsWith('.css'))
-    .map((f) => `<style>\n${f.content}\n</style>`)
+    .filter((f) => f.path.endsWith('.css') && !f.path.includes('node_modules'))
+    .map((f) => `<style data-forge-src="${f.path}">\n${f.content}\n</style>`)
     .join('\n');
   const js = files
-    .filter((f) => f.path.endsWith('.js') && !f.path.includes('node_modules'))
-    .map((f) => `<script>\n${f.content}\n</script>`)
+    .filter((f) => /\.(m?js|cjs)$/i.test(f.path) && !f.path.includes('node_modules') && !/config\./i.test(f.path))
+    .map((f) => `<script data-forge-src="${f.path}">\n${f.content}\n</script>`)
     .join('\n');
-  if (htmlFile.content.includes('<html')) {
-    return htmlFile.content.replace('</head>', `${css}</head>`).replace('</body>', `${js}</body>`);
+  let html = String(htmlFile.content || '');
+  // Drop external stylesheet/script tags that won't resolve inside blob/srcDoc previews
+  html = html
+    .replace(/<link[^>]+href=["'](?!https?:|data:)[^"']+["'][^>]*>/gi, '')
+    .replace(/<script[^>]+src=["'](?!https?:|data:)[^"']+["'][^>]*>\s*<\/script>/gi, '');
+  if (/<html/i.test(html)) {
+    if (!/<\/head>/i.test(html)) html = html.replace(/<body/i, `<head>${css}</head><body`);
+    else html = html.replace(/<\/head>/i, `${css}</head>`);
+    if (!/<\/body>/i.test(html)) html = `${html}${js}`;
+    else html = html.replace(/<\/body>/i, `${js}</body>`);
+    return html;
   }
-  return `<!doctype html><html><head>${css}</head><body>${htmlFile.content}${js}</body></html>`;
+  return `<!doctype html><html><head><meta charset="utf-8"/>${css}</head><body>${html}${js}</body></html>`;
+}
+
+function isStubPreviewHtml(content = '') {
+  return /Project files are arranged|files are in the Code tab|Deployed with Forge AI/i.test(String(content || ''));
 }
 
 const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|svg|ico)$/i;

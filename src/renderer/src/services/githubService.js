@@ -73,7 +73,9 @@ export function preparePagesFiles(files = []) {
   if (!hasIndex) {
     map.set('index.html', {
       path: 'index.html',
-      content: `<!doctype html><html><head><meta charset="utf-8"/><title>Forge AI</title></head><body><h1>Deployed with Forge AI</h1></body></html>`
+      content: `<!doctype html><html lang="en"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>Forge App</title>
+<style>body{margin:0;font-family:system-ui,sans-serif;background:#0b0d10;color:#e8eef7;min-height:100vh;display:grid;place-items:center}main{max-width:640px;padding:32px;border:1px solid #243041;border-radius:16px}a{color:#3d8bfd}</style></head>
+<body><main><h1>Forge App</h1><p>Interactive UI files were missing from this publish. Re-run the agent build, then publish again.</p></main></body></html>`
     });
   }
   return [...map.values()];
@@ -126,6 +128,15 @@ export async function waitForPages(token, { owner, repo, attempts = 6 }) {
 }
 export async function setRepoHomepage(token, { owner, repo, homepage }) {
   return gh(token, `/repos/${owner}/${repo}`, { method: 'PATCH', body: JSON.stringify({ homepage }) });
+}
+export async function renameRepo(token, { owner, repo, name }) {
+  const next = String(name || '')
+    .trim()
+    .replace(/[^a-zA-Z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 100);
+  if (!next) throw new Error('Enter a new repository name');
+  return gh(token, `/repos/${owner}/${repo}`, { method: 'PATCH', body: JSON.stringify({ name: next }) });
 }
 export function pagesUrl(owner, repo) {
   return `https://${owner}.github.io/${repo}/`;

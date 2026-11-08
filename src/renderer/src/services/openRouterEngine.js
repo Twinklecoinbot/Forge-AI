@@ -1,4 +1,5 @@
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
+const DEFAULT_LOCAL_BASE = 'http://127.0.0.1:11434';
 
 export const DEFAULT_MODELS = [
   { id: 'qwen/qwen3-coder:free', label: 'Qwen3 Coder (build)', tier: 'free', skill: 'coding' },
@@ -8,6 +9,10 @@ export const DEFAULT_MODELS = [
   { id: 'deepseek/deepseek-r1:free', label: 'DeepSeek R1 (reasoning only)', tier: 'free', skill: 'reasoning' }
 ];
 
+/**
+ * Unified chat completion: OpenRouter (online) or local OpenAI-compatible / Ollama server.
+ * Default remains OpenRouter so existing setups keep working.
+ */
 export async function completeChat({
   apiKey,
   apiKeys,
@@ -16,12 +21,27 @@ export async function completeChat({
   stream = true,
   onToken,
   signal,
-  maxTokens = 8192
+  maxTokens = 8192,
+  provider = 'openrouter',
+  localBaseUrl = DEFAULT_LOCAL_BASE
 }) {
+  if (provider === 'local') {
+    return requestLocalCompletion({
+      baseUrl: localBaseUrl || DEFAULT_LOCAL_BASE,
+      model,
+      messages,
+      stream,
+      onToken,
+      signal,
+      maxTokens
+    });
+  }
+
   const keys = unique([apiKey, ...(apiKeys || [])].filter(Boolean));
   if (!keys.length) throw new Error('Add your OpenRouter API key in Customize to run the engine.');
-  // Prefer coder models; keep R1 out of automatic fallback (it dumps Thinking Process)
-  const models = unique([model, 'qwen/qwen3-coder:free', 'openrouter/free', 'meta-llama/llama-3.3-70b-instruct:free'].filter(Boolean));
+  const models = unique(
+    [model, 'qwen/qwen3-coder:free', 'openrouter/free', 'meta-llama/llama-3.3-70b-instruct:free'].filter(Boolean)
+  );
   let lastError = null;
   for (const key of keys) {
     for (const currentModel of models) {
@@ -49,6 +69,83 @@ export async function completeChat({
   throw lastError || new Error('OpenRouter request failed.');
 }
 
+/** Detect models on a local Ollama / OpenAI-compatible server. */
+export async function detectLocalModels(baseUrl = DEFAULT_LOCAL_BASE) {
+  const root = String(baseUrl || DEFAULT_LOCAL_BASE).replace(/\/$/, '');
+  const errors = [];
+  // Ollama native tags
+  try {
+    const res = await fetch(`${root}/api/tags`, { signal: AbortSignal.timeout(4000) });
+    if (res.ok) {
+      const data = await res.json();
+      const list = (data.models || []).map((m) => ({
+        id: m.name || m.model,
+        label: `${m.name || m.model} (local)`,
+        tier: 'local',
+        skill: 'local'
+      }));
+      if (list.length) return { ok: true, models: list, baseUrl: root };
+    } else {
+      errors.push(`tags ${res.status}`);
+    }
+  } catch (e) {
+    errors.push(e.message);
+  }
+  // OpenAI-compatible /v1/models
+  try {
+    const res = await fetch(`${root}/v1/models`, { signal: AbortSignal.timeout(4000) });
+    if (res.ok) {
+      const data = await res.json();
+      const list = (data.data || []).map((m) => ({
+        id: m.id,
+        label: `${m.id} (local)`,
+        tier: 'local',
+        skill: 'local'
+      }));
+      if (list.length) return { ok: true, models: list, baseUrl: root };
+    } else {
+      errors.push(`v1/models ${res.status}`);
+    }
+  } catch (e) {
+    errors.push(e.message);
+  }
+  return {
+    ok: false,
+    models: [],
+    baseUrl: root,
+    error: `No local models at ${root}. Start Ollama (or another OpenAI-compatible server). ${errors[0] || ''}`
+  };
+}
+
+async function requestLocalCompletion({ baseUrl, model, messages, stream, onToken, signal, maxTokens }) {
+  const root = String(baseUrl || DEFAULT_LOCAL_BASE).replace(/\/$/, '');
+  if (!model) throw new Error('Select a local model in Customize (Detect local models).');
+
+  // Prefer OpenAI-compatible endpoint (Ollama exposes this too)
+  const url = `${root}/v1/chat/completions`;
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model,
+      messages: normalizeMessages(messages),
+      stream: Boolean(stream),
+      temperature: 0.15,
+      max_tokens: maxTokens || 8192
+    }),
+    signal
+  });
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`Local model ${response.status}: ${errText.slice(0, 280)}`);
+  }
+  if (!stream) {
+    const data = await response.json();
+    return extractText(data?.choices?.[0]?.message?.content) || '';
+  }
+  return readSseStream(response, onToken);
+}
+
 async function requestCompletion({ apiKey, model, messages, stream, onToken, signal, maxTokens }) {
   const response = await fetch(OPENROUTER_URL, {
     method: 'POST',
@@ -68,10 +165,12 @@ async function requestCompletion({ apiKey, model, messages, stream, onToken, sig
   if (!stream) {
     const data = await response.json();
     const message = data?.choices?.[0]?.message || {};
-    const content = extractText(message.content);
-    // Never prefer raw reasoning essays over empty content — caller will retry
-    return content || '';
+    return extractText(message.content) || '';
   }
+  return readSseStream(response, onToken);
+}
+
+async function readSseStream(response, onToken) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
@@ -101,6 +200,20 @@ async function requestCompletion({ apiKey, model, messages, stream, onToken, sig
     }
   }
   return full;
+}
+
+function normalizeMessages(messages = []) {
+  return messages.map((m) => {
+    if (typeof m.content === 'string') return m;
+    if (Array.isArray(m.content)) {
+      const text = m.content
+        .map((p) => (typeof p === 'string' ? p : p?.text || ''))
+        .filter(Boolean)
+        .join('\n');
+      return { role: m.role, content: text };
+    }
+    return { role: m.role, content: String(m.content || '') };
+  });
 }
 
 function extractText(value) {
