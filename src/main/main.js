@@ -108,6 +108,19 @@ function createWindow() {
     shell.openExternal(url);
     return { action: 'deny' };
   });
+  // Keep Forge shell intact — never navigate the whole window away when preview links fire
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    const current = mainWindow.webContents.getURL();
+    if (url === current) return;
+    const allowed =
+      url.startsWith('http://localhost:5173') ||
+      url.startsWith('http://127.0.0.1:5173') ||
+      url.startsWith('file://');
+    if (!allowed) {
+      event.preventDefault();
+      shell.openExternal(url);
+    }
+  });
 }
 
 app.whenReady().then(createWindow);

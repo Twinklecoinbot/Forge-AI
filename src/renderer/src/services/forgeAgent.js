@@ -339,10 +339,12 @@ export function arrangeProjectFiles(files = [], projectName = 'forge-app') {
   const htmlEntry = [...map.values()].find((f) => /(^|\/)index\.html$/i.test(f.path) || /\.html$/i.test(f.path));
   const stub =
     htmlEntry &&
-    /Project files are arranged|files are in the Code tab|Deployed with Forge AI/i.test(htmlEntry.content || '');
-  const hasRealHtml = htmlEntry && !stub && String(htmlEntry.content || '').length > 400;
-  if (!hasRealHtml) {
-    // Always ensure Preview/Pages get a professional interactive UI entry
+    /Project files are arranged|files are in the Code tab|Deployed with Forge AI|Built with Forge AI/i.test(
+      htmlEntry.content || ''
+    ) &&
+    !/(twitter|x\.com|feed|timeline|tweet)/i.test(htmlEntry.content || '');
+  // Never overwrite a model-authored UI with the generic Forge landing — that caused wrong previews
+  if (!htmlEntry) {
     map.set('index.html', { path: 'index.html', content: defaultPreviewHtml(projectName) });
     if (![...map.keys()].some((p) => /(^|\/)styles\.css$/i.test(p))) {
       map.set('styles.css', { path: 'styles.css', content: defaultPreviewCss() });
@@ -350,7 +352,7 @@ export function arrangeProjectFiles(files = [], projectName = 'forge-app') {
     if (![...map.keys()].some((p) => /(^|\/)app\.js$/i.test(p))) {
       map.set('app.js', { path: 'app.js', content: defaultPreviewJs(projectName) });
     }
-  } else if (stub) {
+  } else if (stub && String(htmlEntry.content || '').length < 1200) {
     map.set(htmlEntry.path || 'index.html', {
       path: htmlEntry.path || 'index.html',
       content: defaultPreviewHtml(projectName)

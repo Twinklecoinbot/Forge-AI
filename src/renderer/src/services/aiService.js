@@ -12,17 +12,19 @@ const HARD_CONTRACT = `OUTPUT CONTRACT (non-negotiable):
 3. Forbidden in the response body (except inside FILE blocks): "Thinking Process", long architecture essays, step-by-step guides, "open VS Code", "create a folder", pseudo-code outlines without FILE blocks.
 4. After FILE blocks, add at most 6 short lines: Cause/summary + what you built. No source in that prose.
 5. ALWAYS ship a working interactive frontend that Forge Preview + GitHub Pages can open immediately:
-   - Required: index.html (complete professional UI — navigation, hero, real sections, forms/buttons that work with JS), styles.css, app.js
-   - Also emit backend/API files when the user asks full-stack (server routes, package.json scripts, schema).
-   - index.html must NOT be a placeholder card saying "files are in Code". It must look like a finished product UI.
-6. Obey every enabled user Automations/rules from the system prompt.`;
+   - Required: index.html + styles.css + app.js (complete professional product UI — not a generic "Built with Forge AI" landing).
+   - Match the user's request EXACTLY (clone X/Twitter, dashboard, SaaS, etc.). If they uploaded screenshots/images, treat them as the visual source of truth and recreate layout, colors, density, and components.
+   - Also emit backend/API files when full-stack is requested (routes, package.json, schema, auth).
+6. Obey every enabled user Automations/rules. Remember the user's brief across the whole build — do not invent a different product.
+7. Links/buttons in the UI must work inside an iframe (use # anchors / JS handlers; never navigate top window away).`;
 
-const RETRY_USER = `FAILURE: your previous reply had ZERO <<<FILE path="...">>> blocks (or only a Thinking Process / guide), OR missing a real index.html UI.
+const RETRY_USER = `FAILURE: your previous reply had ZERO <<<FILE path="...">>> blocks, only a guide, OR the UI does not match the user's request/reference images.
 That is unacceptable in Forge AI.
 
 Re-emit the FULL working project NOW using only FILE blocks.
-MUST include: index.html (professional interactive UI), styles.css, app.js, plus any backend files needed.
-No Thinking Process. No VS Code instructions. No essays. No placeholder "files are in Code" pages.`;
+MUST include: index.html + styles.css + app.js that visually and functionally match the user's prompt and any attached reference images (e.g. X/Twitter clone = timeline, sidebar, compose, likes — NOT a generic Forge landing page).
+Also include backend files if they asked full-stack.
+No Thinking Process. No VS Code instructions. No essays.`;
 
 export async function runForgePrompt({
   apiKey,
@@ -39,9 +41,12 @@ export async function runForgePrompt({
   localBaseUrl
 }) {
   const skill = detectSkill(prompt) || (isBuildIntent(prompt) ? 'build' : null);
-  const codingModel = preferCodingModel(model, skill);
+  const imageAttachments = (attachments || []).filter((a) => a.kind === 'image' && a.dataUrl);
+  const codingModel = preferCodingModel(model, skill, { hasImages: imageAttachments.length > 0 });
+  const fidelity = buildFidelityBrief(prompt, attachments);
   const extra = [
     HARD_CONTRACT,
+    fidelity,
     skill ? `SKILL MODE: ${skill}\n${SKILL_HINTS[skill]}` : SKILL_HINTS.build
   ].join('\n\n');
 
@@ -50,17 +55,16 @@ export async function runForgePrompt({
     .map((file) => `FILE ${file.path}\n${file.content}`)
     .join('\n\n---\n\n');
   const textAttachments = (attachments || []).filter((a) => a.kind === 'text' || a.kind === 'binary');
-  const imageAttachments = (attachments || []).filter((a) => a.kind === 'image' && a.dataUrl);
   const attachBlock = textAttachments
     .map((file) => `ATTACHED FILE ${file.path || file.name}\n${file.content || ''}`)
     .join('\n\n---\n\n');
 
-  // Never feed prior Thinking Process dumps back into the model
+  // Never feed prior Thinking Process dumps back into the model — keep user briefs verbatim
   const historyMessages = (history || [])
     .filter((m) => m.role === 'user' || m.role === 'assistant')
-    .slice(-10)
+    .slice(-14)
     .map((m) => {
-      if (m.role === 'user') return { role: 'user', content: clip(m.content, 4000) };
+      if (m.role === 'user') return { role: 'user', content: clip(m.content, 6000) };
       const files = extractFiles(m.content || '');
       if (files.length) {
         return {
@@ -75,8 +79,12 @@ export async function runForgePrompt({
     });
 
   const textParts = [
-    prompt || '(see attached files)',
-    '\n\nRemember: respond with <<<FILE>>> blocks that Forge writes into the Code tab. Do not guide — build.',
+    'USER BRIEF (execute this exactly):\n',
+    prompt || '(see attached files / reference images)',
+    imageAttachments.length
+      ? `\n\nREFERENCE IMAGES ATTACHED (${imageAttachments.length}): recreate this UI pixel-faithfully in index.html/styles.css/app.js.`
+      : '',
+    '\n\nRespond with <<<FILE>>> blocks only. Do not guide — build the product they asked for.',
     attachBlock ? `\n\nUSER ATTACHMENTS:\n${attachBlock}` : '',
     contextBlock ? `\n\nATTACHED WORKSPACE CONTEXT:\n${contextBlock}` : ''
   ].join('');
@@ -149,7 +157,12 @@ export async function runForgePrompt({
   };
 }
 
-function preferCodingModel(model, skill) {
+function preferCodingModel(model, skill, { hasImages } = {}) {
+  // Vision-capable free models when user attaches reference screenshots
+  if (hasImages) {
+    if (model && /gemini|gpt-4o|claude|vision|llama-3\.2|qwen2\.5-vl|pixtral/i.test(model)) return model;
+    return 'google/gemini-2.0-flash-exp:free';
+  }
   if (skill === 'build' || skill === 'debug' || skill === 'review' || skill === 'deploy') {
     if (!model || /deepseek-r1|reasoning|r1/i.test(model) || model === 'openrouter/free') {
       return 'qwen/qwen3-coder:free';
@@ -157,6 +170,21 @@ function preferCodingModel(model, skill) {
   }
   if (/deepseek-r1/i.test(model || '')) return 'qwen/qwen3-coder:free';
   return model || 'qwen/qwen3-coder:free';
+}
+
+function buildFidelityBrief(prompt = '', attachments = []) {
+  const images = (attachments || []).filter((a) => a.kind === 'image');
+  const lines = [
+    'PRODUCT FIDELITY:',
+    `- Deliver the product described in the user brief — not a generic template.`,
+    images.length
+      ? `- ${images.length} reference image(s) attached (${images.map((i) => i.name || 'image').join(', ')}). Match layout, chrome, typography, and density.`
+      : '- No reference images — still match the written request precisely.',
+    /\b(x|twitter)\b/i.test(prompt)
+      ? '- X/Twitter clone checklist: left nav, main timeline, right sidebar trends, tweet cards, compose, like/repost/reply affordances, dark theme.'
+      : null
+  ].filter(Boolean);
+  return lines.join('\n');
 }
 
 function coerceFenceFiles(text = '') {
@@ -187,7 +215,11 @@ function hasPreviewableUi(files = []) {
   if (!html) return false;
   const c = String(html.content || '');
   if (/Project files are arranged|files are in the Code tab|Deployed with Forge AI/i.test(c)) return false;
-  return c.length > 400 && /<(main|section|nav|header|button|form)/i.test(c);
+  // Generic Forge landing alone is not a successful product build
+  if (/Built with Forge AI/i.test(c) && c.length < 3500 && !/(timeline|tweet|sidebar|dashboard|checkout)/i.test(c)) {
+    return false;
+  }
+  return c.length > 600 && /<(main|section|nav|header|button|form)/i.test(c);
 }
 
 export async function runGuidePrompt({

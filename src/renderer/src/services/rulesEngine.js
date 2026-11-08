@@ -11,7 +11,7 @@ export const STARTER_RULES = [
     title: 'Default stack',
     enabled: true,
     body:
-      'Always ship a professional interactive frontend first: index.html + styles.css + app.js that works in Forge Preview and GitHub Pages (no blank placeholder). Also add full-stack files when asked (API routes, package.json, database schema, auth). Prefer Next.js/Vite source in addition to the static entry when the user wants a framework. Include seed/demo data so the UI looks real. Obey saved Automations/rules. You are Forge AI — standalone.'
+      'Always ship a professional interactive frontend first: index.html + styles.css + app.js that works in Forge Preview and GitHub Pages. Recreate the user\'s requested product (and any reference screenshots) — never substitute a generic Forge marketing landing. Also add full-stack files when asked (API routes, package.json, database schema, auth). Prefer Next.js/Vite source in addition to the static entry when the user wants a framework. Include realistic seed/demo data. Obey saved Automations/rules. You are Forge AI — standalone.'
   },
   {
     id: 'quality',

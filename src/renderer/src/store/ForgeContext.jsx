@@ -554,31 +554,29 @@ export function ForgeProvider({ children }) {
     newChat();
   };
 
-  /** Open chats home / current chat without creating a new one. */
+  /** Sidebar Chats: ask to open a new chat (confirm), otherwise stay on current. */
   const openChatsHome = () => {
     setSidebarTab('chats');
-    if (activeChat?.messages?.length) {
-      setView('agent');
+    const wantNew = window.confirm(
+      activeChat?.messages?.length || chats.some((c) => c.messages?.length)
+        ? 'Open a new chat?\n\nOK = new chat (current chat stays saved)\nCancel = stay on current chat'
+        : 'Create a new chat?'
+    );
+    if (wantNew) {
+      newChat();
       return;
     }
-    if (activeChat) {
-      setView('home');
-      return;
+    // Stay on current project chat
+    setWorkspaceMode('chat');
+    if (activeChat?.messages?.length) setView('agent');
+    else if (activeChat) setView('home');
+    else {
+      const withHistory = chats.find((c) => !c.archived && c.messages?.length);
+      if (withHistory) {
+        setActiveChatId(withHistory.id);
+        setView('agent');
+      }
     }
-    const withHistory = chats.find((c) => !c.archived && c.messages?.length);
-    if (withHistory) {
-      setActiveChatId(withHistory.id);
-      setView('agent');
-      return;
-    }
-    if (chats[0]) {
-      setActiveChatId(chats[0].id);
-      setView(chats[0].messages?.length ? 'agent' : 'home');
-      return;
-    }
-    // First-ever session only
-    const ok = window.confirm('No chats yet. Create a new chat?');
-    if (ok) newChat();
   };
 
   const renameProject = (projectId, name) => {
@@ -634,13 +632,16 @@ export function ForgeProvider({ children }) {
     });
   };
 
-  const openProject = (projectId) => {
+  const openProject = (projectId, opts = {}) => {
     const project = projects.find((p) => p.id === projectId);
     if (!project) return;
+    const mode = opts.mode || 'chat';
     setActiveProjectId(project.id);
-    setSidebarTab('files');
+    setSidebarTab(mode === 'chat' ? 'chats' : 'files');
     setOpenTabs((project.files || []).slice(0, 6).map((f) => f.path));
-    setActiveFile(project.files?.[0]?.path || null);
+    if (!activeFile || !project.files?.some((f) => f.path === activeFile)) {
+      setActiveFile(project.files?.[0]?.path || null);
+    }
     if (project.liveUrl || project.previewUrl) {
       setBrowserUrl(project.liveUrl || project.previewUrl);
     }
@@ -654,8 +655,19 @@ export function ForgeProvider({ children }) {
       }
       setActiveChatId(chat.id);
       setProjects((ps) => ps.map((p) => (p.id === project.id ? { ...p, chatId: chat.id } : p)));
-      setView(chat.messages?.length ? 'agent' : 'home');
-      setWorkspaceMode('chat');
+      if (mode === 'code') {
+        setWorkspaceMode('code');
+        setView('workspace');
+      } else if (mode === 'files') {
+        setWorkspaceMode('files');
+        setView('files');
+      } else if (mode === 'browser') {
+        setWorkspaceMode('browser');
+        setView('browser');
+      } else {
+        setWorkspaceMode('chat');
+        setView(chat.messages?.length ? 'agent' : 'home');
+      }
       return next;
     });
   };
@@ -894,6 +906,21 @@ export function ForgeProvider({ children }) {
     }
     setComposer('');
     setAttachments([]);
+    // Remember the brief on the project so later turns stay on-spec
+    if (activeProjectId && text) {
+      setProjects((ps) =>
+        ps.map((p) =>
+          p.id === activeProjectId
+            ? {
+                ...p,
+                brief: text,
+                briefAt: Date.now(),
+                referenceNames: pendingAttachments.map((a) => a.name).filter(Boolean)
+              }
+            : p
+        )
+      );
+    }
     setView('agent');
     setBusy(true);
     setStatus('Agent running');
@@ -948,7 +975,15 @@ export function ForgeProvider({ children }) {
         localBaseUrl: settings.localBaseUrl || 'http://127.0.0.1:11434',
         rules,
         history,
-        prompt: text || 'Investigate attached / imported files, rearrange if needed, and continue the app.',
+        prompt: (() => {
+          const proj = projectsRef.current.find((p) => p.id === activeProjectIdRef.current);
+          const base =
+            text || 'Investigate attached / imported files, rearrange if needed, and continue the app.';
+          if (proj?.brief && text && text !== proj.brief) {
+            return `${base}\n\nPRIOR PROJECT BRIEF (stay faithful):\n${proj.brief}`;
+          }
+          return base;
+        })(),
         contextFiles,
         attachments: pendingAttachments,
         previousFiles,

@@ -138,6 +138,10 @@ export async function renameRepo(token, { owner, repo, name }) {
   if (!next) throw new Error('Enter a new repository name');
   return gh(token, `/repos/${owner}/${repo}`, { method: 'PATCH', body: JSON.stringify({ name: next }) });
 }
+export async function deleteRepo(token, { owner, repo }) {
+  if (!owner || !repo) throw new Error('Missing repository');
+  return gh(token, `/repos/${owner}/${repo}`, { method: 'DELETE' });
+}
 export function pagesUrl(owner, repo) {
   return `https://${owner}.github.io/${repo}/`;
 }

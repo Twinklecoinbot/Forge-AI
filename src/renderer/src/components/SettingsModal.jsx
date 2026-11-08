@@ -71,13 +71,14 @@ export default function SettingsModal() {
 
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/50 p-6">
-      <div className="w-full max-w-lg rounded-2xl border border-[var(--border)] bg-[var(--bg-elevated)] p-5 shadow-2xl">
-        <div className="mb-4 flex items-center justify-between">
+      <div className="flex max-h-[min(88vh,720px)] w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--bg-elevated)] shadow-2xl">
+        <div className="flex shrink-0 items-center justify-between border-b border-[var(--border)] px-5 py-4">
           <h2 className="text-[16px] font-semibold">Customize</h2>
           <button onClick={() => setSettingsOpen(false)}>
             <X size={16} />
           </button>
         </div>
+        <div className="forge-scroll min-h-0 flex-1 px-5 py-4">
 
         <label className="mb-1 block text-[12px] text-[var(--text-muted)]">OpenRouter API key</label>
         <input
@@ -235,15 +236,17 @@ export default function SettingsModal() {
           </button>
         )}
 
-        <div className="mt-5 flex justify-end gap-2">
+        </div>
+        <div className="flex shrink-0 justify-end gap-2 border-t border-[var(--border)] px-5 py-3">
           <button
-            className="rounded-md border border-[var(--border)] px-3 py-2 text-[13px]"
+            className="rounded-md border border-[var(--border)] px-3 py-2 text-[13px] text-[var(--text)]"
             onClick={() => setSettingsOpen(false)}
           >
             Close
           </button>
           <button
-            className="inline-flex items-center gap-2 rounded-md bg-[var(--accent)] px-3 py-2 text-[13px] text-white"
+            className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-[13px] font-medium"
+            style={{ background: 'var(--accent)', color: 'var(--accent-fg)' }}
             onClick={async () => {
               await saveCustomize();
               setSettingsOpen(false);

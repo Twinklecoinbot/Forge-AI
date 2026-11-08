@@ -15,10 +15,12 @@ import {
   SquarePen,
   Sun,
   Trash2,
+  Pencil,
   Workflow
 } from 'lucide-react';
 import { useForge } from '../store/ForgeContext.jsx';
 import { treeFromFiles } from '../services/fileParser.js';
+import { deleteRepo, renameRepo } from '../services/githubService.js';
 import Logo from './Logo.jsx';
 import FileIcon from './FileIcon.jsx';
 
@@ -51,6 +53,7 @@ export default function Sidebar() {
     setActiveFile,
     setOpenTabs,
     githubRepos,
+    setGithubRepos,
     settings,
     setSettingsOpen,
     setSearchOpen,
@@ -62,13 +65,16 @@ export default function Sidebar() {
     setWorkspaceMode,
     isElectron,
     activeProject,
-    relativeTime
+    relativeTime,
+    showToast
   } = useForge();
   const folderInputRef = useRef(null);
   const menuRef = useRef(null);
   const [creating, setCreating] = useState(null);
   const [renamingId, setRenamingId] = useState(null);
   const [renameValue, setRenameValue] = useState('');
+  const [repoRenamingId, setRepoRenamingId] = useState(null);
+  const [repoRenameValue, setRepoRenameValue] = useState('');
   const [expanded, setExpanded] = useState(() => new Set());
 
   useEffect(() => {
@@ -376,16 +382,90 @@ export default function Sidebar() {
             </button>
           )}
           {githubRepos.slice(0, 12).map((repo) => (
-            <a
+            <div
               key={repo.id}
-              href={repo.html_url}
-              target="_blank"
-              rel="noreferrer"
-              className="forge-row mb-0.5 flex items-center gap-2 rounded-md px-2 py-1.5 text-[12.5px]"
+              className="group mb-0.5 flex items-center gap-1 rounded-md px-2 py-1.5 text-[12.5px] hover:bg-[var(--bg-hover)]"
             >
-              <GitBranch size={12} className="text-[var(--text-muted)]" />
-              <span className="truncate">{repo.name}</span>
-            </a>
+              <GitBranch size={12} className="shrink-0 text-[var(--text-muted)]" />
+              {repoRenamingId === repo.id ? (
+                <form
+                  className="flex min-w-0 flex-1 items-center gap-1"
+                  onSubmit={async (e) => {
+                    e.preventDefault();
+                    try {
+                      const owner = repo.owner?.login || settings.githubUser?.login;
+                      const updated = await renameRepo(settings.githubToken, {
+                        owner,
+                        repo: repo.name,
+                        name: repoRenameValue
+                      });
+                      setGithubRepos((list) =>
+                        list.map((r) =>
+                          r.id === repo.id
+                            ? { ...r, ...updated, name: updated.name, full_name: updated.full_name, html_url: updated.html_url }
+                            : r
+                        )
+                      );
+                      setRepoRenamingId(null);
+                      showToast?.(`Renamed to ${updated.name}`);
+                    } catch (err) {
+                      showToast?.(err.message);
+                    }
+                  }}
+                >
+                  <input
+                    autoFocus
+                    value={repoRenameValue}
+                    onChange={(e) => setRepoRenameValue(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Escape') setRepoRenamingId(null);
+                    }}
+                    className="min-w-0 flex-1 rounded border border-[var(--border)] bg-[var(--bg)] px-1.5 py-0.5 text-[12px] outline-none"
+                  />
+                </form>
+              ) : (
+                <a
+                  href={repo.html_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="min-w-0 flex-1 truncate text-left hover:underline"
+                  title={repo.full_name}
+                >
+                  {repo.name}
+                </a>
+              )}
+              <button
+                type="button"
+                title="Rename repository"
+                className="hidden h-6 w-6 place-items-center text-[var(--text-muted)] hover:text-[var(--text)] group-hover:grid"
+                onClick={() => {
+                  setRepoRenamingId(repo.id);
+                  setRepoRenameValue(repo.name);
+                }}
+              >
+                <Pencil size={11} />
+              </button>
+              <button
+                type="button"
+                title="Delete repository"
+                className="hidden h-6 w-6 place-items-center text-[var(--text-muted)] hover:text-red-400 group-hover:grid"
+                onClick={async () => {
+                  const owner = repo.owner?.login || settings.githubUser?.login;
+                  if (!window.confirm(`Delete GitHub repo “${repo.full_name || repo.name}”? This cannot be undone.`)) {
+                    return;
+                  }
+                  try {
+                    await deleteRepo(settings.githubToken, { owner, repo: repo.name });
+                    setGithubRepos((list) => list.filter((r) => r.id !== repo.id));
+                    showToast?.(`Deleted ${repo.name}`);
+                  } catch (err) {
+                    showToast?.(err.message);
+                  }
+                }}
+              >
+                <Trash2 size={11} />
+              </button>
+            </div>
           ))}
         </Section>
       </div>

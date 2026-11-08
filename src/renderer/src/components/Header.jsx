@@ -2,14 +2,14 @@ import { Code2, Files, Globe, MessageSquare } from 'lucide-react';
 import { useForge } from '../store/ForgeContext.jsx';
 
 const tabs = [
-  { id: 'chat', label: 'Chat', icon: MessageSquare, view: 'home' },
-  { id: 'code', label: 'Code', icon: Code2, view: 'workspace' },
-  { id: 'files', label: 'Files', icon: Files, view: 'files' },
-  { id: 'preview', label: 'Preview', icon: Globe, view: 'browser' }
+  { id: 'chat', label: 'Chat', icon: MessageSquare, mode: 'chat' },
+  { id: 'code', label: 'Code', icon: Code2, mode: 'code' },
+  { id: 'files', label: 'Files', icon: Files, mode: 'files' },
+  { id: 'preview', label: 'Preview', icon: Globe, mode: 'browser' }
 ];
 
 export default function Header() {
-  const { view, setView, setWorkspaceMode } = useForge();
+  const { view, setView, setWorkspaceMode, activeProject, activeChat, openProject, setBrowserUrl } = useForge();
   const active =
     view === 'agent' || view === 'home'
       ? 'chat'
@@ -21,6 +21,35 @@ export default function Header() {
             ? 'preview'
             : 'chat';
 
+  const onTab = (tab) => {
+    if (activeProject?.id) {
+      if (tab.mode === 'browser') {
+        const live = activeProject.liveUrl || activeProject.githubRepo?.live || '';
+        const preview = activeProject.previewUrl || '';
+        if (live || preview) setBrowserUrl(live || preview);
+      }
+      openProject(activeProject.id, { mode: tab.mode });
+      return;
+    }
+    if (tab.mode === 'chat') {
+      setWorkspaceMode('chat');
+      setView(activeChat?.messages?.length ? 'agent' : 'home');
+      return;
+    }
+    if (tab.mode === 'code') {
+      setWorkspaceMode('code');
+      setView('workspace');
+      return;
+    }
+    if (tab.mode === 'files') {
+      setWorkspaceMode('files');
+      setView('files');
+      return;
+    }
+    setWorkspaceMode('browser');
+    setView('browser');
+  };
+
   return (
     <header className="flex h-10 shrink-0 items-center gap-1 border-b border-[var(--border)] bg-[var(--bg-panel)] px-3">
       {tabs.map((tab) => {
@@ -28,10 +57,7 @@ export default function Header() {
         return (
           <button
             key={tab.id}
-            onClick={() => {
-              setWorkspaceMode(tab.id);
-              setView(tab.view === 'home' ? (view === 'agent' ? 'agent' : 'home') : tab.view);
-            }}
+            onClick={() => onTab(tab)}
             className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[12.5px] ${
               active === tab.id ? 'bg-[var(--bg-active)] text-[var(--text)]' : 'text-[var(--text-muted)] hover:bg-[var(--bg-hover)]'
             }`}
