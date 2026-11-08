@@ -1,4 +1,4 @@
-import { completeChat } from './openRouterEngine.js';
+import { CODING_FREE_MODEL, VISION_FREE_MODEL, completeChat, resolveWorkingModel } from './openRouterEngine.js';
 import { compileSystemPrompt, detectSkill, SKILL_HINTS, isBuildIntent } from './rulesEngine.js';
 import { extractFiles, extractCommands } from './fileParser.js';
 import { looksLikeGuideDump } from './chatPresentation.js';
@@ -42,7 +42,10 @@ export async function runForgePrompt({
 }) {
   const skill = detectSkill(prompt) || (isBuildIntent(prompt) ? 'build' : null);
   const imageAttachments = (attachments || []).filter((a) => a.kind === 'image' && a.dataUrl);
-  const codingModel = preferCodingModel(model, skill, { hasImages: imageAttachments.length > 0 });
+  const codingModel = preferCodingModel(model, skill, {
+    hasImages: imageAttachments.length > 0,
+    provider
+  });
   const fidelity = buildFidelityBrief(prompt, attachments);
   const extra = [
     HARD_CONTRACT,
@@ -126,7 +129,7 @@ export async function runForgePrompt({
     text = await completeChat({
       apiKey,
       apiKeys,
-      model: imageAttachments.length ? codingModel : provider === 'local' ? codingModel : 'qwen/qwen3-coder:free',
+      model: codingModel,
       messages: [
         ...baseMessages,
         { role: 'assistant', content: clip(text, 1500) },
@@ -157,20 +160,17 @@ export async function runForgePrompt({
   };
 }
 
-function preferCodingModel(model, skill, { hasImages } = {}) {
-  // Vision-capable models when user attaches reference screenshots (coder-only models ignore images)
+function preferCodingModel(model, skill, { hasImages, provider } = {}) {
+  if (provider === 'local') return model;
   if (hasImages) {
-    if (model && /gemini|gpt-4o|claude|vision|llama-3\.2|qwen2\.5-vl|pixtral/i.test(model)) return model;
-    // Prefer free vision endpoints; fall through retry will still keep images in the payload
-    return 'google/gemini-2.0-flash-001:free';
+    const kept = resolveWorkingModel(model, { hasImages: true, provider });
+    if (kept && /gemini|gpt-4o|claude|gemma|vision|nemotron-3.5-super|pixtral/i.test(kept)) return kept;
+    return VISION_FREE_MODEL;
   }
   if (skill === 'build' || skill === 'debug' || skill === 'fix' || skill === 'review' || skill === 'deploy') {
-    if (!model || /deepseek-r1|reasoning|r1/i.test(model) || model === 'openrouter/free') {
-      return 'qwen/qwen3-coder:free';
-    }
+    return resolveWorkingModel(model, { provider }) || CODING_FREE_MODEL;
   }
-  if (/deepseek-r1/i.test(model || '')) return 'qwen/qwen3-coder:free';
-  return model || 'qwen/qwen3-coder:free';
+  return resolveWorkingModel(model, { provider }) || CODING_FREE_MODEL;
 }
 
 function buildFidelityBrief(prompt = '', attachments = []) {
@@ -207,7 +207,7 @@ export async function describeReferenceImages({
     const text = await completeChat({
       apiKey,
       apiKeys,
-      model: 'google/gemini-2.0-flash-001:free',
+      model: VISION_FREE_MODEL,
       messages: [
         {
           role: 'system',
@@ -307,7 +307,7 @@ export async function runGuidePrompt({
   const text = await completeChat({
     apiKey,
     apiKeys,
-    model: model || 'meta-llama/llama-3.3-70b-instruct:free',
+    model: resolveWorkingModel(model, { provider }),
     messages: [
       { role: 'system', content: system },
       ...historyMessages,

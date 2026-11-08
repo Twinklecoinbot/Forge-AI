@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { bridge } from '../services/bridge.js';
-import { DEFAULT_MODELS } from '../services/openRouterEngine.js';
+import { CODING_FREE_MODEL, DEFAULT_MODELS, explainModelError, resolveWorkingModel } from '../services/openRouterEngine.js';
 import { STARTER_RULES, createBlankRule, compileSystemPrompt, ensureExecutionRules } from '../services/rulesEngine.js';
 import { createAgentStages, runForgeAgent } from '../services/forgeAgent.js';
 import {
@@ -130,7 +130,7 @@ export function ForgeProvider({ children }) {
     openRouterKey: '',
     openRouterKey2: '',
     githubToken: '',
-    model: 'qwen/qwen3-coder:free',
+    model: CODING_FREE_MODEL,
     provider: 'openrouter',
     localBaseUrl: 'http://127.0.0.1:11434',
     workspaceRoot: '',
@@ -211,7 +211,9 @@ export function ForgeProvider({ children }) {
         openRouterKey: local.openRouterKey || seeded.openRouterKey || '',
         openRouterKey2: local.openRouterKey2 || seeded.openRouterKey2 || '',
         githubToken: local.githubToken || '',
-        model: local.model || loaded.model || 'qwen/qwen3-coder:free',
+        model: resolveWorkingModel(local.model || loaded.model || CODING_FREE_MODEL, {
+          provider: local.provider || loaded.provider || 'openrouter'
+        }),
         provider: local.provider || loaded.provider || 'openrouter',
         localBaseUrl: local.localBaseUrl || loaded.localBaseUrl || 'http://127.0.0.1:11434',
         workspaceRoot: loaded.workspaceRoot || s.workspaceRoot
@@ -1088,10 +1090,10 @@ export function ForgeProvider({ children }) {
         );
       } else {
         setStatus('Agent: no files');
-        showToast('Agent got no files — retry with Qwen3 Coder');
+        showToast('Agent got no files — retry, or switch Customize to a free model that is still listed');
       }
     } catch (error) {
-      const message = error.name === 'AbortError' ? 'Generation stopped.' : error.message;
+      const message = error.name === 'AbortError' ? 'Generation stopped.' : explainModelError(error.message);
       setChats((all) =>
         all.map((c) =>
           c.id === chatId
@@ -1101,9 +1103,10 @@ export function ForgeProvider({ children }) {
                   m.id === assistantId
                     ? {
                         ...m,
-                        content: m.content || message,
+                        content: message,
+                        display: message,
                         error: true,
-                        progress: { complete: true, done: [message], next: ['Retry the prompt'], stages: [] }
+                        progress: { complete: true, done: [message], next: ['Retry the prompt'], stages: m.progress?.stages || [] }
                       }
                     : m
                 )

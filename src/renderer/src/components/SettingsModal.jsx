@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Github, Link2, RefreshCw, Save, X } from 'lucide-react';
 import { useForge } from '../store/ForgeContext.jsx';
 import { bridge } from '../services/bridge.js';
-import { DEFAULT_MODELS, detectLocalModels } from '../services/openRouterEngine.js';
+import { CODING_FREE_MODEL, DEFAULT_MODELS, detectLocalModels, resolveWorkingModel } from '../services/openRouterEngine.js';
 
 export default function SettingsModal() {
   const {
@@ -102,7 +102,7 @@ export default function SettingsModal() {
             onClick={() =>
               saveSettings({
                 provider: 'openrouter',
-                model: settings.model?.includes('/') ? settings.model : 'qwen/qwen3-coder:free'
+                model: resolveWorkingModel(settings.model, { provider: 'openrouter' }) || CODING_FREE_MODEL
               })
             }
             className={`rounded-md border px-3 py-2 text-left text-[12.5px] ${

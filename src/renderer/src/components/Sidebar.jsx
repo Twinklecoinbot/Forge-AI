@@ -349,6 +349,14 @@ export default function Sidebar() {
           })}
         </Section>
 
+        <button
+          type="button"
+          onClick={requestNewChat}
+          className="mb-2 flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12.5px] text-[var(--text)] hover:bg-[var(--bg-hover)]"
+        >
+          <SquarePen size={14} className="text-[var(--text-muted)]" />
+          New chat
+        </button>
         <Section title="Chats">
           {chats
             .filter((c) => !c.archived && !c.projectId)

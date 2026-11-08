@@ -1,13 +1,35 @@
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const DEFAULT_LOCAL_BASE = 'http://127.0.0.1:11434';
 
+/** Free ids OpenRouter still serves. The old `:free` Qwen/Gemini/Llama ids now return "not available for free". */
+export const CODING_FREE_MODEL = 'cohere/north-mini-code:free';
+export const VISION_FREE_MODEL = 'google/gemma-4-31b-it:free';
+export const FREE_ROUTER_MODEL = 'openrouter/free';
+
+const RETIRED_FREE_MODEL = /qwen3-coder:free|gemini-2\.0-flash|llama-3\.2-11b-vision|llama-3\.3-70b-instruct:free|deepseek-r1:free|nemotron-3-nano-30b/i;
+
 export const DEFAULT_MODELS = [
-  { id: 'qwen/qwen3-coder:free', label: 'Qwen3 Coder (build)', tier: 'free', skill: 'coding' },
-  { id: 'openrouter/free', label: 'OpenRouter Free Auto', tier: 'free', skill: 'auto' },
-  { id: 'meta-llama/llama-3.3-70b-instruct:free', label: 'Llama 3.3 70B', tier: 'free', skill: 'general' },
-  { id: 'nvidia/nemotron-3-nano-30b-a3b:free', label: 'Nemotron Nano', tier: 'free', skill: 'fast' },
-  { id: 'deepseek/deepseek-r1:free', label: 'DeepSeek R1 (reasoning only)', tier: 'free', skill: 'reasoning' }
+  { id: CODING_FREE_MODEL, label: 'North Mini Code (build)', tier: 'free', skill: 'coding' },
+  { id: FREE_ROUTER_MODEL, label: 'OpenRouter Free Auto', tier: 'free', skill: 'auto' },
+  { id: VISION_FREE_MODEL, label: 'Gemma 4 31B (vision)', tier: 'free', skill: 'vision' },
+  { id: 'google/gemma-4-26b-a4b-it:free', label: 'Gemma 4 26B (vision)', tier: 'free', skill: 'vision' },
+  { id: 'nvidia/nemotron-3.5-lightning:free', label: 'Nemotron 3.5 Lightning', tier: 'free', skill: 'fast' },
+  { id: 'nvidia/nemotron-3-ultra-550b-a55b:free', label: 'Nemotron 3 Ultra', tier: 'free', skill: 'general' }
 ];
+
+export function resolveWorkingModel(model, { hasImages = false, provider = 'openrouter' } = {}) {
+  if (provider === 'local') return model || '';
+  if (!model || RETIRED_FREE_MODEL.test(model)) return hasImages ? VISION_FREE_MODEL : CODING_FREE_MODEL;
+  return model;
+}
+
+export function explainModelError(message = '') {
+  const text = String(message || 'Request failed');
+  if (/not available for free|no endpoints|is not a valid model/i.test(text)) {
+    return 'OpenRouter refused that model on the free tier. The old free Qwen and Gemini ids were removed, so Forge switches to a free model that is still listed. A model you downloaded in Ollama does not have this limit: Customize → Local server model → Detect local models. Local only fails if Ollama is stopped or that model was not pulled.';
+  }
+  return text;
+}
 
 /**
  * Unified chat completion: OpenRouter (online) or local OpenAI-compatible / Ollama server.
@@ -40,16 +62,23 @@ export async function completeChat({
   const keys = unique([apiKey, ...(apiKeys || [])].filter(Boolean));
   if (!keys.length) throw new Error('Add your OpenRouter API key in Customize to run the engine.');
   const hasImages = messagesHaveImages(messages);
+  const requested = resolveWorkingModel(model, { hasImages, provider: 'openrouter' });
   const models = unique(
     (hasImages
       ? [
-          model,
-          'google/gemini-2.0-flash-001:free',
-          'google/gemini-2.0-flash-exp:free',
-          'meta-llama/llama-3.2-11b-vision-instruct:free',
-          'qwen/qwen3-coder:free'
+          requested,
+          VISION_FREE_MODEL,
+          'google/gemma-4-26b-a4b-it:free',
+          'nvidia/nemotron-3.5-super-vl:free',
+          FREE_ROUTER_MODEL
         ]
-      : [model, 'qwen/qwen3-coder:free', 'openrouter/free', 'meta-llama/llama-3.3-70b-instruct:free']
+      : [
+          requested,
+          CODING_FREE_MODEL,
+          FREE_ROUTER_MODEL,
+          'nvidia/nemotron-3.5-lightning:free',
+          'nvidia/nemotron-3-ultra-550b-a55b:free'
+        ]
     ).filter(Boolean)
   );
   let lastError = null;
@@ -70,13 +99,15 @@ export async function completeChat({
         if (error.name === 'AbortError') throw error;
         lastError = error;
         const msg = String(error.message || '').toLowerCase();
-        if (/401|403|429|402|rate|quota|limit|unauthorized|user not found/.test(msg)) break;
-        if (/model|not found|unavailable|no endpoints|404/.test(msg)) continue;
+        if (/401|403|429|402|rate|quota|limit|unauthorized|user not found/.test(msg) && !/not available for free|no endpoints|not a valid model/.test(msg)) {
+          break;
+        }
+        if (/model|not found|unavailable|no endpoints|404|not available/.test(msg)) continue;
         throw error;
       }
     }
   }
-  throw lastError || new Error('OpenRouter request failed.');
+  throw new Error(explainModelError(lastError?.message || 'OpenRouter request failed.'));
 }
 
 /** Detect models on a local Ollama / OpenAI-compatible server. */
@@ -130,6 +161,11 @@ export async function detectLocalModels(baseUrl = DEFAULT_LOCAL_BASE) {
 async function requestLocalCompletion({ baseUrl, model, messages, stream, onToken, signal, maxTokens }) {
   const root = String(baseUrl || DEFAULT_LOCAL_BASE).replace(/\/$/, '');
   if (!model) throw new Error('Select a local model in Customize (Detect local models).');
+  if (/:free$/.test(model) || /^(openrouter|qwen|google|meta-llama|deepseek|nvidia|cohere)\//.test(model)) {
+    throw new Error(
+      'That name is an OpenRouter model, not one installed in Ollama. In Customize choose Local server model, click Detect local models, and pick the model you downloaded. Ollama does not use the OpenRouter free tier.'
+    );
+  }
 
   // Prefer OpenAI-compatible endpoint (Ollama exposes this too)
   const url = `${root}/v1/chat/completions`;
@@ -235,7 +271,7 @@ function extractText(value) {
 }
 
 function modelAcceptsImages(model = '') {
-  return /gemini|gpt-4o|claude|vision|llama-3\.2|qwen2\.5-vl|pixtral/i.test(model);
+  return /gemini|gpt-4o|claude|vision|llama-3\.2|qwen2\.5-vl|pixtral|gemma|nemotron|openrouter\/free/i.test(model);
 }
 
 /** Keep image parts for vision models. Text-only fallbacks get the prompt without a payload they reject. */
