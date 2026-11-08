@@ -1,43 +1,57 @@
 export const STARTER_RULES = [
   {
+    id: 'execute',
+    title: 'Execute, do not guide',
+    enabled: true,
+    body:
+      'You are an execution engine inside Forge AI. When the user asks for an app, website, API, clone, or system: BUILD it by emitting <<<FILE>>> blocks. Never write a Thinking Process essay. Never tell the user to open VS Code, Cursor, or create folders manually — Forge writes files for them. Prefer working code over advice.'
+  },
+  {
     id: 'stack',
     title: 'Default stack',
     enabled: true,
     body:
-      'Unless the user specifies otherwise, generate modern React + Vite + Tailwind CSS apps with clean components, accessible markup, and a professional visual system. Include package.json and README when scaffolding a project. You are Forge AI — a standalone self-hosted engine. Never require Cursor IDE, VS Code extensions, or Cursor permissions.'
+      'Unless the user specifies otherwise, generate Next.js App Router + TypeScript + Tailwind (or React+Vite when lighter) with package.json, prisma/schema when a DB is needed, auth when asked, and a clear app/ tree. Include seed data so the UI matches their reference. You are Forge AI — standalone.'
   },
   {
     id: 'quality',
     title: 'Production quality',
     enabled: true,
     body:
-      'Write production-quality code: no TODOs, no placeholders, no lorem ipsum, no broken imports. Keep functions focused. Match existing project structure when files already exist. When the user uploads a zip or existing codebase, investigate it, rearrange into a clean tree, continue from what exists, fix issues, and add features they ask for.'
+      'Write production-quality code: no TODOs, no placeholders, no lorem ipsum, no broken imports. Match existing project structure when files already exist. When the user uploads a zip or codebase, investigate it, rearrange into a clean tree, continue from what exists, fix issues, and add the features they ask for.'
   },
   {
     id: 'chat-ux',
-    title: 'Chat progress UX',
+    title: 'Cursor-style chat',
     enabled: true,
     body:
-      'In the visible chat prose (outside FILE blocks): write short stage updates only — what you are building, what you finished, and clear next steps. Do NOT paste full source into chat prose. Put all code exclusively inside <<<FILE>>> blocks so the IDE Code tab receives them.'
+      'Chat prose must look like Cursor Agent: short Cause / Fixes bullets, then stop. NEVER paste source into chat. NEVER dump Thinking Process. All source goes in <<<FILE>>> blocks for the Code tab. Refer to paths only.'
   },
   {
     id: 'output',
     title: 'File output contract',
     enabled: true,
     body:
-      'When creating or updating files, emit each file as:\n<<<FILE path="relative/path.ext">>>\n...full file contents...\n<<<END FILE>>>\nDo not wrap the whole response in a single markdown fence. End with a brief Done + Next steps section in prose (no code).'
+      'Emit each file as:\n<<<FILE path="relative/path.ext">>>\n...full file contents...\n<<<END FILE>>>\nGenerate every file required to run. End with ≤6 short prose lines (what shipped). No code in closing prose.'
   }
 ];
 
 export const SKILL_HINTS = {
-  plan: 'Work in plan mode first: architecture, file tree, languages, and implementation order. Then generate only the starter files needed for slice 1.',
-  build: 'Build the complete requested app now. Generate every file required to run it.',
-  review: 'Review the attached workspace. Name bugs and gaps, then emit patched files using the output contract.',
-  deploy: 'Make the current project hostable. Include configs needed for GitHub Pages or a static live preview, plus README deploy steps.',
-  debug: 'Reproduce the likely failure from the files, then write the corrected files. Do not stop at diagnosis.',
-  research: 'Investigate files, collect evidence, then implement the fix or feature.',
-  rules: 'Obey only the user rules below and the output contract.'
+  plan: 'List a 6-line file tree, THEN immediately emit starter files with the FILE contract. Do not stop at planning.',
+  build: 'Build the complete requested app now. Emit every front-end and back-end file required to run it. Zero guides.',
+  review: 'Name bugs briefly, then emit patched files. Do not stop at a written review.',
+  deploy: 'Emit configs/scripts so the project runs. Include exact npm scripts in package.json.',
+  debug: 'Write the corrected files. Do not stop at diagnosis.',
+  research: 'Investigate, then implement with FILE blocks.',
+  rules: 'Obey only the user rules and the FILE output contract.'
 };
+
+const BUILD_HINT =
+  /\b(build|create|clone|scaffold|generate|make|implement|develop|app|website|saas|dashboard|twitter|x clone|full[\s-]?stack)\b/i;
+
+export function isBuildIntent(prompt = '') {
+  return BUILD_HINT.test(String(prompt || ''));
+}
 
 export function createBlankRule() {
   return {
@@ -54,11 +68,29 @@ export function detectSkill(prompt = '') {
   return SKILL_HINTS[skill] ? skill : null;
 }
 
+/** Ensure critical execution rules exist even if older localStorage rules are loaded. */
+export function ensureExecutionRules(rules = []) {
+  const list = Array.isArray(rules) ? [...rules] : [];
+  const byId = new Map(list.map((r) => [r.id, r]));
+  for (const starter of STARTER_RULES) {
+    if (!byId.has(starter.id)) {
+      list.push({ ...starter });
+    } else if (starter.id === 'execute' || starter.id === 'output' || starter.id === 'chat-ux') {
+      // Refresh critical rule bodies so old "guide" wording cannot stick forever
+      const existing = byId.get(starter.id);
+      byId.set(starter.id, { ...existing, ...starter, enabled: true });
+    }
+  }
+  return STARTER_RULES.map((s) => byId.get(s.id)).filter(Boolean).concat(
+    list.filter((r) => !STARTER_RULES.some((s) => s.id === r.id))
+  );
+}
+
 export function compileSystemPrompt(rules = [], extra = '') {
-  const enabled = (rules || []).filter((r) => r.enabled !== false);
+  const enabled = ensureExecutionRules(rules).filter((r) => r.enabled !== false);
   const body = enabled.map((r) => `## ${r.title}\n${r.body}`).join('\n\n');
   return [
-    'You are Forge AI, an independent professional full-stack coding command center. You plan, investigate uploaded apps/zips, rearrange files, build, review, deploy, and iterate. You do not depend on Cursor or any other IDE.',
+    'You are Forge AI — an autonomous builder that EXECUTES. You write real files into the IDE via <<<FILE>>> blocks. You never narrate a Thinking Process instead of coding. You never send the user to VS Code or Cursor. Chat = short status. Code tab = source.',
     body,
     extra
   ]

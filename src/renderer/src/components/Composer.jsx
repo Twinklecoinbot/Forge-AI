@@ -159,7 +159,7 @@ export default function Composer({ compact = false }) {
           onKeyDown={onKey}
           onPaste={onPaste}
           rows={compact ? 3 : 4}
-          placeholder="Plan, Build, / for skills, @ for context — paste or drop files"
+          placeholder="Describe the app — Agent builds files, Preview, and can /deploy to GitHub"
           className="w-full resize-none bg-transparent text-[14.5px] leading-6 outline-none placeholder:text-[var(--text-muted)]"
         />
         <div className="mt-2 flex items-center justify-between gap-3">

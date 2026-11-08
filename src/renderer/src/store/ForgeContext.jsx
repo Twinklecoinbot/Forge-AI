@@ -1,11 +1,12 @@
 import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { bridge } from '../services/bridge.js';
 import { DEFAULT_MODELS } from '../services/openRouterEngine.js';
-import { STARTER_RULES, createBlankRule, compileSystemPrompt } from '../services/rulesEngine.js';
-import { runForgePrompt } from '../services/aiService.js';
+import { STARTER_RULES, createBlankRule, compileSystemPrompt, ensureExecutionRules } from '../services/rulesEngine.js';
+import { createAgentStages, runForgeAgent } from '../services/forgeAgent.js';
 import {
   isLikelyTextPath,
   languageFromPath,
+  previewHtml,
   projectNameFromPrompt,
   readBrowserFile
 } from '../services/fileParser.js';
@@ -19,20 +20,28 @@ import {
   setRepoHomepage,
   waitForPages
 } from '../services/githubService.js';
-import { loadPersistedRules, persistRules, refineSystemRules } from '../services/ruleRefiner.js';
-import { buildDeliverySummary, buildLiveProgress } from '../services/chatPresentation.js';
+import {
+  loadPersistedRules,
+  persistRules,
+  persistRulesDurable,
+  refineSystemRules,
+  rulesFromSettings
+} from '../services/ruleRefiner.js';
+import { buildDeliverySummary, chatFacingText } from '../services/chatPresentation.js';
 import { unpackZipFile } from '../services/archiveService.js';
 
 const ForgeContext = createContext(null);
 const uid = () => Math.random().toString(36).slice(2, 10);
 
-const defaultChat = () => ({
+const defaultChat = (extras = {}) => ({
   id: uid(),
-  title: 'New Chat',
+  title: extras.title || 'New Chat',
+  projectId: extras.projectId || null,
   messages: [],
   createdAt: Date.now(),
   pinned: false,
-  archived: false
+  archived: false,
+  ...extras
 });
 
 const defaultProject = (name = 'Untitled project', extras = {}) => ({
@@ -42,17 +51,31 @@ const defaultProject = (name = 'Untitled project', extras = {}) => ({
   rootPath: null,
   githubRepo: null,
   liveUrl: null,
+  previewUrl: null,
+  chatId: null,
   arrangedAt: Date.now(),
   createdAt: Date.now(),
   ...extras
 });
 
+function relativeTime(ts) {
+  const diff = Date.now() - (ts || Date.now());
+  const m = Math.floor(diff / 60000);
+  if (m < 1) return 'now';
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 48) return `${h}h`;
+  const d = Math.floor(h / 24);
+  if (d < 60) return `${d}d`;
+  return `${Math.floor(d / 30)}mo`;
+}
+
 export function ForgeProvider({ children }) {
   const [theme, setTheme] = useState(() => localStorage.getItem('forge.theme') || 'dark');
   const [view, setView] = useState('home');
   const [sidebarTab, setSidebarTab] = useState('chats');
-  const [chats, setChats] = useState([defaultChat()]);
-  const [activeChatId, setActiveChatId] = useState(null);
+  const [chats, setChats] = useState([]);
+  const [activeChatId, setActiveChatId] = useState(() => localStorage.getItem('forge.activeChatId') || null);
   const [projects, setProjects] = useState([]);
   const [activeProjectId, setActiveProjectId] = useState(null);
   const [openTabs, setOpenTabs] = useState([]);
@@ -66,7 +89,7 @@ export function ForgeProvider({ children }) {
     openRouterKey: '',
     openRouterKey2: '',
     githubToken: '',
-    model: 'openrouter/free',
+    model: 'qwen/qwen3-coder:free',
     workspaceRoot: '',
     githubUser: null
   });
@@ -90,7 +113,7 @@ export function ForgeProvider({ children }) {
 
   const activeProject = projects.find((p) => p.id === activeProjectId) || null;
   const files = activeProject?.files || [];
-  const activeChat = chats.find((c) => c.id === activeChatId) || chats[0];
+  const activeChat = chats.find((c) => c.id === activeChatId) || null;
   const projectRoot = activeProject?.rootPath || settings.workspaceRoot || null;
 
   useEffect(() => {
@@ -106,10 +129,11 @@ export function ForgeProvider({ children }) {
   }, [theme]);
 
   useEffect(() => {
-    if (!activeChatId && chats[0]) setActiveChatId(chats[0].id);
-  }, [activeChatId, chats]);
+    if (activeChatId) localStorage.setItem('forge.activeChatId', activeChatId);
+  }, [activeChatId]);
 
   useEffect(() => {
+    // Keep local + durable copies; never wipe on logout/disconnect
     persistRules(rules);
   }, [rules]);
 
@@ -124,27 +148,125 @@ export function ForgeProvider({ children }) {
       } catch {
         /* optional */
       }
+      const restoredRules = ensureExecutionRules(rulesFromSettings(loaded, STARTER_RULES));
+      setRules(restoredRules);
+      persistRules(restoredRules);
       setSettings((s) => ({
         ...s,
         ...loaded,
         openRouterKey: local.openRouterKey || seeded.openRouterKey || '',
         openRouterKey2: local.openRouterKey2 || seeded.openRouterKey2 || '',
         githubToken: local.githubToken || '',
-        model: local.model || loaded.model || 'openrouter/free',
+        model: local.model || loaded.model || 'qwen/qwen3-coder:free',
         workspaceRoot: loaded.workspaceRoot || s.workspaceRoot
       }));
-      const persistedProjects = localStorage.getItem('forge.projects');
-      if (persistedProjects) {
-        const parsed = JSON.parse(persistedProjects);
-        setProjects(parsed);
-        if (parsed[0]) setActiveProjectId(parsed[0].id);
+      const savedProjectId = localStorage.getItem('forge.activeProjectId');
+      let restoredProjects = [];
+      try {
+        const persistedProjects = localStorage.getItem('forge.projects');
+        if (persistedProjects) restoredProjects = JSON.parse(persistedProjects) || [];
+      } catch {
+        restoredProjects = [];
+      }
+      // Survive secret logout: fall back to durable Electron/userData meta + reload disk files
+      if (!restoredProjects.length && Array.isArray(loaded.projectsMeta) && loaded.projectsMeta.length) {
+        restoredProjects = loaded.projectsMeta.map((meta) =>
+          defaultProject(meta.name || 'Project', {
+            id: meta.id || uid(),
+            rootPath: meta.rootPath || null,
+            liveUrl: meta.liveUrl || null,
+            previewUrl: null,
+            chatId: meta.chatId || null,
+            githubRepo: meta.githubRepo || null,
+            arrangedAt: meta.arrangedAt || meta.createdAt || Date.now(),
+            createdAt: meta.createdAt || Date.now(),
+            files: []
+          })
+        );
+      }
+      // Reload file trees from disk for projects with a rootPath (real builds stay inspectable)
+      if (bridge.isElectron) {
+        restoredProjects = await Promise.all(
+          restoredProjects.map(async (project) => {
+            if (!project.rootPath || String(project.rootPath).startsWith('browser://')) return project;
+            try {
+              const loadedFolder = await bridge.readFolderFiles(project.rootPath);
+              if (loadedFolder?.files?.length) {
+                return {
+                  ...project,
+                  name: project.name || loadedFolder.name,
+                  files: loadedFolder.files,
+                  rootPath: loadedFolder.path || project.rootPath
+                };
+              }
+            } catch {
+              /* folder may have moved */
+            }
+            return project;
+          })
+        );
+      }
+      if (restoredProjects.length) {
+        setProjects(restoredProjects);
+        localStorage.setItem('forge.projects', JSON.stringify(restoredProjects));
+        const keepProj =
+          (savedProjectId && restoredProjects.find((p) => p.id === savedProjectId)?.id) ||
+          restoredProjects[0]?.id ||
+          null;
+        if (keepProj) setActiveProjectId(keepProj);
+        const proj = restoredProjects.find((p) => p.id === keepProj);
+        if (proj?.liveUrl) setBrowserUrl(proj.liveUrl);
+        else if (proj?.files?.length) {
+          const html = previewHtml(proj.files);
+          if (html) {
+            try {
+              if (window.__forgePreviewUrl) URL.revokeObjectURL(window.__forgePreviewUrl);
+            } catch {
+              /* ignore */
+            }
+            const url = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
+            window.__forgePreviewUrl = url;
+            setBrowserUrl(url);
+          }
+        }
       }
       const persistedChats = localStorage.getItem('forge.chats');
+      const savedChatId = localStorage.getItem('forge.activeChatId');
       if (persistedChats) {
         const parsed = JSON.parse(persistedChats);
         if (parsed.length) {
           setChats(parsed);
-          setActiveChatId(parsed[0].id);
+          const projectId =
+            localStorage.getItem('forge.activeProjectId') || restoredProjects[0]?.id || null;
+          const projectChat = projectId && parsed.find((c) => c.projectId === projectId && !c.archived);
+          const keep =
+            projectChat?.id ||
+            (savedChatId && parsed.find((c) => c.id === savedChatId)?.id) ||
+            parsed.find((c) => c.messages?.length)?.id ||
+            parsed[0].id;
+          setActiveChatId(keep);
+          const keepChat = parsed.find((c) => c.id === keep);
+          setView(keepChat?.messages?.length ? 'agent' : 'home');
+        }
+      } else if (restoredProjects.length) {
+        // Recreate one chat per restored project so work can continue after logout
+        const rebuilt = restoredProjects.map((p) =>
+          defaultChat({
+            id: p.chatId || uid(),
+            title: p.name,
+            projectId: p.id
+          })
+        );
+        setChats(rebuilt);
+        const first = rebuilt[0];
+        if (first) {
+          setActiveChatId(first.id);
+          setProjects((ps) =>
+            ps.map((p) => {
+              const chat = rebuilt.find((c) => c.projectId === p.id);
+              return chat ? { ...p, chatId: chat.id } : p;
+            })
+          );
         }
       }
       const persistedPrompts = localStorage.getItem('forge.prompts');
@@ -159,6 +281,22 @@ export function ForgeProvider({ children }) {
   useEffect(() => {
     try {
       localStorage.setItem('forge.projects', JSON.stringify(projects));
+      // Durable copy survives secret logout / browser clears of secrets only
+      bridge.saveSettings({
+        projectsMeta: projects.map((p) => ({
+          id: p.id,
+          name: p.name,
+          rootPath: p.rootPath,
+          liveUrl: p.liveUrl,
+          previewUrl: p.previewUrl,
+          chatId: p.chatId,
+          githubRepo: p.githubRepo,
+          arrangedAt: p.arrangedAt,
+          createdAt: p.createdAt,
+          fileCount: p.files?.length || 0
+        })),
+        projectsUpdatedAt: Date.now()
+      }).catch(() => {});
     } catch {
       /* quota */
     }
@@ -170,6 +308,31 @@ export function ForgeProvider({ children }) {
       /* quota */
     }
   }, [chats]);
+  useEffect(() => {
+    if (activeProjectId) localStorage.setItem('forge.activeProjectId', activeProjectId);
+  }, [activeProjectId]);
+
+  // Refresh local preview whenever the active project's files change
+  useEffect(() => {
+    const project = projects.find((p) => p.id === activeProjectId);
+    if (!project?.files?.length) return;
+    const html = previewHtml(project.files);
+    if (!html) return;
+    try {
+      if (window.__forgePreviewUrl) URL.revokeObjectURL(window.__forgePreviewUrl);
+    } catch {
+      /* ignore */
+    }
+    const url = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
+    window.__forgePreviewUrl = url;
+    setBrowserUrl((prev) => {
+      if (prev && String(prev).includes('github.io')) return prev;
+      return url;
+    });
+    setProjects((all) =>
+      all.map((p) => (p.id === project.id && p.previewUrl !== url ? { ...p, previewUrl: url } : p))
+    );
+  }, [activeProjectId, activeProject?.files?.length, activeProject?.arrangedAt]);
 
   useEffect(() => {
     const onKey = (e) => {
@@ -235,9 +398,16 @@ export function ForgeProvider({ children }) {
       let list = prev;
       if (!list.length || !targetId) {
         const created = defaultProject(projectName || 'Untitled project');
+        const chat = defaultChat({ title: created.name, projectId: created.id });
+        created.chatId = chat.id;
         targetId = created.id;
         list = [created, ...list];
         setActiveProjectId(created.id);
+        setChats((c) => {
+          if (c.some((x) => x.projectId === created.id && !x.archived)) return c;
+          return [chat, ...c];
+        });
+        setActiveChatId(chat.id);
       }
       return list.map((project) => {
         if (project.id !== targetId) return project;
@@ -273,6 +443,43 @@ export function ForgeProvider({ children }) {
     setAttachments([]);
   };
 
+  /** Open chats home / current chat without creating a new one. */
+  const openChatsHome = () => {
+    setSidebarTab('chats');
+    if (activeChat?.messages?.length) {
+      setView('agent');
+      return;
+    }
+    if (activeChat) {
+      setView('home');
+      return;
+    }
+    if (chats[0]) {
+      setActiveChatId(chats[0].id);
+      setView(chats[0].messages?.length ? 'agent' : 'home');
+      return;
+    }
+    // First-ever session: create one empty chat only when none exist
+    newChat();
+  };
+
+  const editUserMessage = (message) => {
+    if (!message || message.role !== 'user') return;
+    setComposer(message.content || '');
+    setAttachments(message.attachments || []);
+    const chatId = activeChatId;
+    setChats((all) =>
+      all.map((c) => {
+        if (c.id !== chatId) return c;
+        const idx = c.messages.findIndex((m) => m.id === message.id);
+        if (idx < 0) return c;
+        return { ...c, messages: c.messages.slice(0, idx) };
+      })
+    );
+    setView(activeChat?.messages?.length > 1 ? 'agent' : 'home');
+    showToast('Edit your prompt and send again');
+  };
+
   const pinChat = (id) => setChats((all) => all.map((c) => (c.id === id ? { ...c, pinned: !c.pinned } : c)));
   const archiveChat = (id) =>
     setChats((all) => all.map((c) => (c.id === id ? { ...c, archived: !c.archived, pinned: false } : c)));
@@ -289,25 +496,83 @@ export function ForgeProvider({ children }) {
     });
   };
 
-  const newProject = () => {
-    const project = defaultProject('New project', {
+  /** Ensure each project has exactly one bound chat; open it (never create extras). */
+  const ensureProjectChat = (project, existingChats = chats) => {
+    const found = existingChats.find((c) => c.projectId === project.id && !c.archived);
+    if (found) return found;
+    return defaultChat({
+      title: project.name || 'Project chat',
+      projectId: project.id
+    });
+  };
+
+  const openProject = (projectId) => {
+    const project = projects.find((p) => p.id === projectId);
+    if (!project) return;
+    setActiveProjectId(project.id);
+    setSidebarTab('files');
+    setOpenTabs((project.files || []).slice(0, 6).map((f) => f.path));
+    setActiveFile(project.files?.[0]?.path || null);
+    if (project.liveUrl || project.previewUrl) {
+      setBrowserUrl(project.liveUrl || project.previewUrl);
+    }
+    setChats((all) => {
+      let chat = all.find((c) => c.projectId === project.id && !c.archived);
+      let next = all;
+      if (!chat) {
+        chat = ensureProjectChat(project, all);
+        next = [chat, ...all];
+      }
+      setActiveChatId(chat.id);
+      setProjects((ps) => ps.map((p) => (p.id === project.id ? { ...p, chatId: chat.id } : p)));
+      setView(chat.messages?.length ? 'agent' : 'home');
+      setWorkspaceMode('chat');
+      return next;
+    });
+  };
+
+  const newProject = async (name = 'New project') => {
+    let project = defaultProject(name, {
       liveUrl: null,
+      previewUrl: null,
       arrangedAt: Date.now()
     });
+    // Prefer on-disk project so files + agent work survive logout
+    if (bridge.isElectron) {
+      try {
+        const created = await bridge.createProjectFolder({ name, seedReadme: true });
+        const loaded = await bridge.readFolderFiles(created.path);
+        project = defaultProject(loaded.name || name, {
+          id: project.id,
+          rootPath: loaded.path,
+          files: loaded.files || [],
+          liveUrl: null,
+          previewUrl: null,
+          arrangedAt: Date.now()
+        });
+      } catch {
+        /* keep in-memory project */
+      }
+    }
+    const chat = defaultChat({ title: project.name, projectId: project.id });
+    project.chatId = chat.id;
     setProjects((p) => [project, ...p]);
+    setChats((c) => [chat, ...c.filter((x) => x.projectId !== project.id)]);
     setActiveProjectId(project.id);
-    setOpenTabs([]);
-    setActiveFile(null);
+    setActiveChatId(chat.id);
+    setOpenTabs((project.files || []).slice(0, 4).map((f) => f.path));
+    setActiveFile(project.files?.[0]?.path || null);
     setBrowserUrl('');
     setView('home');
     setSidebarTab('files');
+    setWorkspaceMode('chat');
     setProjectMenuOpen(false);
-    showToast('Project ready — files will arrange into Code; publish for a live link');
+    showToast(`Project “${project.name}” ready — its chat is open`);
+    return project;
   };
 
   const saveRules = async () => {
-    persistRules(rules);
-    await bridge.saveSettings({ rulesUpdatedAt: Date.now() });
+    await persistRulesDurable(rules);
     showToast('Saved successfully');
   };
 
@@ -429,7 +694,36 @@ export function ForgeProvider({ children }) {
     const text = (raw ?? composer).trim();
     if ((!text && !attachments.length) || busy) return;
     lastPromptRef.current = text;
-    const chatId = activeChatId || chats[0]?.id;
+    // Always run against the active project's chat — never spawn a stray chat mid-build
+    let chatId = null;
+    if (activeProjectId) {
+      const bound =
+        chats.find((c) => c.projectId === activeProjectId && !c.archived) ||
+        (activeChat?.projectId === activeProjectId ? activeChat : null);
+      if (bound) {
+        chatId = bound.id;
+        if (activeChatId !== bound.id) setActiveChatId(bound.id);
+      } else {
+        const chat = defaultChat({
+          title: activeProject?.name || 'Project chat',
+          projectId: activeProjectId
+        });
+        chatId = chat.id;
+        setChats((c) => [chat, ...c]);
+        setActiveChatId(chat.id);
+        setProjects((ps) =>
+          ps.map((p) => (p.id === activeProjectId ? { ...p, chatId: chat.id } : p))
+        );
+      }
+    } else {
+      chatId = activeChatId || chats[0]?.id;
+      if (!chatId) {
+        const chat = defaultChat();
+        chatId = chat.id;
+        setChats([chat]);
+        setActiveChatId(chat.id);
+      }
+    }
     const display = text || `(attached ${attachments.map((a) => a.name).join(', ')})`;
     const pendingAttachments = attachments;
     const userMessage = {
@@ -454,17 +748,26 @@ export function ForgeProvider({ children }) {
           ? {
               ...c,
               projectId: activeProjectId || c.projectId,
-              title: c.messages.length ? c.title : display.slice(0, 42),
+              title:
+                c.messages.length
+                  ? c.title
+                  : activeProject?.name || display.slice(0, 42),
               messages: [...c.messages, userMessage]
             }
           : c
       )
     );
+    // Bind chat to active project
+    if (activeProjectId) {
+      setProjects((ps) =>
+        ps.map((p) => (p.id === activeProjectId ? { ...p, chatId } : p))
+      );
+    }
     setComposer('');
     setAttachments([]);
     setView('agent');
     setBusy(true);
-    setStatus('Generating');
+    setStatus('Agent running');
     const assistantId = uid();
     setChats((all) =>
       all.map((c) =>
@@ -477,7 +780,8 @@ export function ForgeProvider({ children }) {
                   id: assistantId,
                   role: 'assistant',
                   content: '',
-                  progress: buildLiveProgress('', true),
+                  display: 'Forge Agent starting…',
+                  progress: { stages: createAgentStages().map((s, i) => ({ ...s, status: i === 0 ? 'active' : 'pending' })) },
                   at: Date.now()
                 }
               ]
@@ -490,9 +794,24 @@ export function ForgeProvider({ children }) {
     const contextFiles = attachedPaths.length
       ? files.filter((f) => attachedPaths.includes(f.path))
       : files.filter((f) => isLikelyTextPath(f.path)).slice(0, 12);
+    const previousFiles = projectsRef.current.find((p) => p.id === activeProjectIdRef.current)?.files || [];
     abortRef.current = new AbortController();
+
+    const patchAssistant = (patch) => {
+      setChats((all) =>
+        all.map((c) =>
+          c.id === chatId
+            ? {
+                ...c,
+                messages: c.messages.map((m) => (m.id === assistantId ? { ...m, ...patch } : m))
+              }
+            : c
+        )
+      );
+    };
+
     try {
-      const result = await runForgePrompt({
+      const result = await runForgeAgent({
         apiKey: settings.openRouterKey,
         apiKeys: [settings.openRouterKey, settings.openRouterKey2],
         model: settings.model,
@@ -501,83 +820,85 @@ export function ForgeProvider({ children }) {
         prompt: text || 'Investigate attached / imported files, rearrange if needed, and continue the app.',
         contextFiles,
         attachments: pendingAttachments,
+        previousFiles,
+        githubConnected: Boolean(settings.githubToken && settings.githubUser),
         signal: abortRef.current.signal,
-        onToken: (_t, full) => {
-          const progress = buildLiveProgress(full, true);
-          setChats((all) =>
-            all.map((c) =>
-              c.id === chatId
-                ? {
-                    ...c,
-                    messages: c.messages.map((m) =>
-                      m.id === assistantId
-                        ? { ...m, content: full, progress, files: progress.filePaths.map((path) => ({ path })) }
-                        : m
-                    )
-                  }
-                : c
-            )
-          );
-        }
+        onProgress: ({ stages, text: full, files: fileRefs, display, previewUrl, changes, activity, mode }) => {
+          // Chat shows status only — never dump raw code into the bubble while building
+          patchAssistant({
+            content: mode === 'guide' ? full : full,
+            display,
+            files: fileRefs,
+            changes,
+            previewUrl,
+            activity,
+            mode,
+            progress: { stages, complete: false }
+          });
+          if (fileRefs?.length && mode !== 'guide') {
+            upsertFiles(fileRefs, projectNameFromPrompt(text), { skipOpen: true });
+          }
+        },
+        deploy: async ({ name, files: deployFiles, isPrivate }) =>
+          publishToGithub({ name, isPrivate, fileOverride: deployFiles })
       });
 
       if (result.files.length) {
-        upsertFiles(result.files, projectNameFromPrompt(text));
+        upsertFiles(result.files, result.projectName || projectNameFromPrompt(text));
         await bridge.writeFiles(result.files, currentRoot());
         setOpenTabs((tabs) => {
           const next = [...tabs];
-          result.files.slice(0, 6).forEach((f) => {
+          result.files.slice(0, 8).forEach((f) => {
             if (!next.includes(f.path)) next.push(f.path);
           });
           return next;
         });
         if (result.files[0]) setActiveFile(result.files[0].path);
+        if (result.previewUrl) setBrowserUrl(result.previewUrl);
       }
 
-      const liveUrl = activeProject?.githubRepo?.live || activeProject?.liveUrl || '';
       const summary = buildDeliverySummary({
         files: result.files,
-        prose: result.text,
-        liveUrl
+        prose: result.display || (result.mode === 'guide' ? result.text : ''),
+        liveUrl: result.previewUrl || result.deployResult?.live || ''
       });
-      const progress = {
-        ...buildLiveProgress(result.text, false),
-        done: summary.done,
-        next: summary.next,
-        complete: true
-      };
 
-      setChats((all) =>
-        all.map((c) =>
-          c.id === chatId
-            ? {
-                ...c,
-                messages: c.messages.map((m) =>
-                  m.id === assistantId
-                    ? {
-                        ...m,
-                        content: result.text,
-                        files: result.files,
-                        progress,
-                        deliveryComplete: true
-                      }
-                    : m
-                )
-              }
-            : c
-        )
-      );
+      patchAssistant({
+        content: result.text,
+        display: result.display || chatFacingText(result.text, { files: result.files, previewUrl: result.previewUrl }),
+        files: result.files,
+        changes: result.changes,
+        previewUrl: result.previewUrl || result.deployResult?.live || '',
+        deployResult: result.deployResult,
+        activity: result.activity,
+        mode: result.mode,
+        progress: {
+          stages: result.stages,
+          done: summary.done,
+          next: summary.next,
+          complete: true
+        },
+        deliveryComplete: true,
+        error: Boolean(result.failedDelivery)
+      });
 
       setProjects((all) =>
         all.map((p) =>
-          p.id === (activeProjectId || p.id)
-            ? { ...p, arrangedAt: Date.now(), name: p.files.length ? p.name : projectNameFromPrompt(text) || p.name }
+          p.id === (activeProjectIdRef.current || p.id)
+            ? {
+                ...p,
+                arrangedAt: Date.now(),
+                liveUrl: result.deployResult?.live || (String(result.previewUrl || '').startsWith('http') ? result.previewUrl : p.liveUrl),
+                previewUrl: result.previewUrl || p.previewUrl,
+                chatId: activeChatId || p.chatId,
+                name: p.files.length ? p.name : result.projectName || projectNameFromPrompt(text) || p.name
+              }
             : p
         )
       );
 
       await bridge.logTrainingPair({
-        action: 'generated',
+        action: result.failedDelivery ? 'failed-guide' : 'agent-built',
         model: settings.model,
         systemRules: compileSystemPrompt(rules),
         prompt: text,
@@ -588,11 +909,15 @@ export function ForgeProvider({ children }) {
       });
 
       if (result.files.length) {
-        setStatus(`Done · ${result.files.length} files in Code`);
-        showToast(`Delivery complete — ${result.files.length} files in Code`);
+        setStatus(`Agent done · ${result.files.length} files`);
+        showToast(
+          result.deployResult?.live
+            ? `Built + deployed: ${result.deployResult.live}`
+            : `Agent built ${result.files.length} files — Code / Preview ready`
+        );
       } else {
-        setStatus('Done');
-        showToast('Delivery complete');
+        setStatus('Agent: no files');
+        showToast('Agent got no files — retry with Qwen3 Coder');
       }
     } catch (error) {
       const message = error.name === 'AbortError' ? 'Generation stopped.' : error.message;
@@ -642,16 +967,24 @@ export function ForgeProvider({ children }) {
     return user;
   };
 
-  const publishToGithub = async ({ name, isPrivate }) => {
-    if (!files.length) throw new Error('Generate or add files first.');
-    const repo = await createRepo(settings.githubToken, { name, description: 'Built with Forge AI', isPrivate });
+  const publishToGithub = async ({ name, isPrivate, fileOverride } = {}) => {
+    const payload =
+      fileOverride?.length
+        ? fileOverride
+        : files.filter((f) => typeof f.content === 'string' && !String(f.content).startsWith('data:'));
+    if (!payload.length) throw new Error('Generate or add files first.');
+    const repo = await createRepo(settings.githubToken, {
+      name,
+      description: 'Built with Forge AI Agent',
+      isPrivate
+    });
     const owner = repo.owner.login;
     await new Promise((r) => setTimeout(r, 800));
     await pushFiles(settings.githubToken, {
       owner,
       repo: repo.name,
-      files: files.filter((f) => typeof f.content === 'string' && !f.content.startsWith('data:')),
-      message: 'Publish from Forge AI'
+      files: payload,
+      message: 'Publish from Forge AI Agent'
     });
     let live = pagesUrl(owner, repo.name);
     try {
@@ -665,7 +998,7 @@ export function ForgeProvider({ children }) {
     }
     setProjects((all) =>
       all.map((p) =>
-        p.id === activeProjectId
+        p.id === (activeProjectIdRef.current || activeProjectId)
           ? { ...p, liveUrl: live, githubRepo: { owner, name: repo.name, url: repo.html_url, live } }
           : p
       )
@@ -740,8 +1073,12 @@ export function ForgeProvider({ children }) {
       archiveChat,
       deleteChat,
       newChat,
+      openChatsHome,
+      openProject,
+      editUserMessage,
       newProject,
       deleteProject,
+      relativeTime,
       saveRules,
       saveCustomize,
       submitFeedback,
@@ -782,9 +1119,16 @@ export function ForgeProvider({ children }) {
           if (!picked.ok) return null;
           const loaded = await bridge.readFolderFiles(picked.path);
           const project = defaultProject(loaded.name, { rootPath: loaded.path, files: loaded.files || [] });
+          const chat = defaultChat({ title: project.name, projectId: project.id });
+          project.chatId = chat.id;
           setProjects((p) => [project, ...p]);
+          setChats((c) => [chat, ...c]);
           setActiveProjectId(project.id);
-          setView(project.files.length ? 'workspace' : 'home');
+          setActiveChatId(chat.id);
+          setOpenTabs((project.files || []).slice(0, 6).map((f) => f.path));
+          setActiveFile(project.files?.[0]?.path || null);
+          setView(project.files.length ? 'agent' : 'home');
+          setWorkspaceMode('chat');
           return project;
         }
         return { needsBrowserPicker: true };
@@ -793,8 +1137,17 @@ export function ForgeProvider({ children }) {
         const created = await bridge.createProjectFolder({ name, seedReadme: true });
         const loaded = await bridge.readFolderFiles(created.path);
         const project = defaultProject(loaded.name, { rootPath: loaded.path, files: loaded.files || [] });
+        const chat = defaultChat({ title: project.name, projectId: project.id });
+        project.chatId = chat.id;
         setProjects((p) => [project, ...p]);
+        setChats((c) => [chat, ...c]);
         setActiveProjectId(project.id);
+        setActiveChatId(chat.id);
+        setOpenTabs((project.files || []).slice(0, 4).map((f) => f.path));
+        setActiveFile(project.files?.[0]?.path || null);
+        setView('home');
+        setWorkspaceMode('chat');
+        showToast(`Project “${project.name}” chat is open`);
         return project;
       },
       importBrowserFolder: async (fileList) => {
@@ -811,8 +1164,16 @@ export function ForgeProvider({ children }) {
         const root = `browser://${folderName}`;
         await bridge.writeFiles(incoming, root);
         const project = defaultProject(folderName, { rootPath: root, files: incoming });
+        const chat = defaultChat({ title: project.name, projectId: project.id });
+        project.chatId = chat.id;
         setProjects((p) => [project, ...p]);
+        setChats((c) => [chat, ...c]);
         setActiveProjectId(project.id);
+        setActiveChatId(chat.id);
+        setOpenTabs(incoming.slice(0, 6).map((f) => f.path));
+        setActiveFile(incoming[0]?.path || null);
+        setView(incoming.length ? 'agent' : 'home');
+        setWorkspaceMode('chat');
         return project;
       },
       createFileInProject: async (relPath, content = '') => {

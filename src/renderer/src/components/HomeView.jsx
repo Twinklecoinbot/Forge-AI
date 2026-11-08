@@ -3,20 +3,40 @@ import { useForge } from '../store/ForgeContext.jsx';
 import Composer from './Composer.jsx';
 
 const actions = [
-  { icon: Rocket, title: 'Deploy my prototype', sub: 'Put a project on a shareable live link', go: 'github' },
-  { icon: Database, title: 'Review my workspace', sub: 'Check schema, files, and risky gaps', prompt: '/review Review every file and patch bugs.' },
-  { icon: ScrollText, title: 'Start with a plan', sub: 'Align on implementation before writing code', prompt: '/plan Design architecture then starter files.' },
-  { icon: Bug, title: 'Debug an issue', sub: 'Find root causes and fix tricky bugs', prompt: '/debug Debug the current workspace and write fixes.' }
+  { icon: Rocket, title: 'Build & deploy a prototype', sub: 'Generate the app, then publish a live link', go: 'github' },
+  { icon: Database, title: 'Review & patch my workspace', sub: 'Find gaps and write the fixes into Code', prompt: '/review Review every file and emit patched files.' },
+  { icon: ScrollText, title: 'Scaffold a production app', sub: 'Architecture plus working starter files now', prompt: '/build Design the tree and generate the runnable starter files.' },
+  { icon: Bug, title: 'Debug and fix', sub: 'Root-cause the bug and write corrected files', prompt: '/debug Debug the current workspace and write fixes.' }
 ];
 
 export default function HomeView() {
   const { sendPrompt, setView } = useForge();
   return (
     <div className="flex min-h-full flex-col items-center px-6 py-10 forge-fade">
-      <div className="mt-8 w-full max-w-[760px]"><Composer /></div>
+      <div className="mt-8 w-full max-w-[760px]">
+        <Composer />
+      </div>
       <div className="mt-4 flex gap-2">
-        <button onClick={() => sendPrompt('/plan Design a production web app and generate starter files.')} className="rounded-full border border-[var(--border)] px-3 py-1.5 text-[12.5px] text-[var(--text-muted)] hover:bg-[var(--bg-hover)]">Plan New Idea</button>
-        <button onClick={() => sendPrompt('/build Generate a complete app shell and core files.')} className="rounded-full border border-[var(--border)] px-3 py-1.5 text-[12.5px] text-[var(--text-muted)] hover:bg-[var(--bg-hover)]">Multitask</button>
+        <button
+          onClick={() =>
+            sendPrompt(
+              '/build Build a complete production web app end-to-end. Emit all files into Code, arrange the tree, and open Preview. No guides.'
+            )
+          }
+          className="rounded-full border border-[var(--border)] px-3 py-1.5 text-[12.5px] text-[var(--text-muted)] hover:bg-[var(--bg-hover)]"
+        >
+          Agent build
+        </button>
+        <button
+          onClick={() =>
+            sendPrompt(
+              '/deploy Build a full-stack app, arrange files, open Preview, and deploy to GitHub Pages for a live URL.'
+            )
+          }
+          className="rounded-full border border-[var(--border)] px-3 py-1.5 text-[12.5px] text-[var(--text-muted)] hover:bg-[var(--bg-hover)]"
+        >
+          Build + deploy
+        </button>
       </div>
       <div className="mt-10 w-full max-w-[760px] divide-y divide-[var(--border)] pb-8">
         {actions.map((item) => {

@@ -206,6 +206,9 @@ function stripFence(content = '') {
 function parseFencePath(meta = '') {
   const direct = meta.match(/(?:file|path)=["']?([^"'\s]+)["']?/i);
   if (direct) return direct[1];
+  // ```tsx app/page.tsx  OR  ```typescript src/index.ts
+  const langPath = meta.match(/^(?:tsx?|jsx?|javascript|typescript|json|css|html|md|prisma|sql|bash|sh)\s+([^\s]+)$/i);
+  if (langPath) return langPath[1];
   if (/[./]/.test(meta) && !/\s/.test(meta)) return meta;
   return null;
 }

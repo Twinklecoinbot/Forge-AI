@@ -81,9 +81,18 @@ export default function SettingsModal() {
           </button>
         </div>
         {settings.githubUser && (
-          <div className="mb-4 flex items-center gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-[12.5px] text-emerald-300">
-            <Link2 size={14} />
-            Connected as @{settings.githubUser.login}
+          <div className="mb-4">
+            <div className="mb-2 flex items-center gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-[12.5px] text-emerald-300">
+              <Link2 size={14} />
+              Connected as @{settings.githubUser.login}
+            </div>
+            <button
+              type="button"
+              className="text-[12px] text-[var(--text-muted)] underline"
+              onClick={() => saveSettings({ githubToken: '', githubUser: null })}
+            >
+              Disconnect (keeps rules, projects, chats)
+            </button>
           </div>
         )}
 

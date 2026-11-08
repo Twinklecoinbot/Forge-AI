@@ -1,30 +1,41 @@
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 
 export const DEFAULT_MODELS = [
+  { id: 'qwen/qwen3-coder:free', label: 'Qwen3 Coder (build)', tier: 'free', skill: 'coding' },
   { id: 'openrouter/free', label: 'OpenRouter Free Auto', tier: 'free', skill: 'auto' },
-  { id: 'qwen/qwen3-coder:free', label: 'Qwen3 Coder', tier: 'free', skill: 'coding' },
-  { id: 'deepseek/deepseek-r1:free', label: 'DeepSeek R1', tier: 'free', skill: 'reasoning' },
   { id: 'meta-llama/llama-3.3-70b-instruct:free', label: 'Llama 3.3 70B', tier: 'free', skill: 'general' },
-  { id: 'nvidia/nemotron-3-nano-30b-a3b:free', label: 'Nemotron Nano', tier: 'free', skill: 'fast' }
+  { id: 'nvidia/nemotron-3-nano-30b-a3b:free', label: 'Nemotron Nano', tier: 'free', skill: 'fast' },
+  { id: 'deepseek/deepseek-r1:free', label: 'DeepSeek R1 (reasoning only)', tier: 'free', skill: 'reasoning' }
 ];
 
-const FALLBACK_MODELS = [
-  'openrouter/free',
-  'qwen/qwen3-coder:free',
-  'deepseek/deepseek-r1:free',
-  'meta-llama/llama-3.3-70b-instruct:free'
-];
-
-export async function completeChat({ apiKey, apiKeys, model, messages, stream = true, onToken, signal }) {
+export async function completeChat({
+  apiKey,
+  apiKeys,
+  model,
+  messages,
+  stream = true,
+  onToken,
+  signal,
+  maxTokens = 8192
+}) {
   const keys = unique([apiKey, ...(apiKeys || [])].filter(Boolean));
   if (!keys.length) throw new Error('Add your OpenRouter API key in Customize to run the engine.');
-  const models = unique([model, ...FALLBACK_MODELS].filter(Boolean));
+  // Prefer coder models; keep R1 out of automatic fallback (it dumps Thinking Process)
+  const models = unique([model, 'qwen/qwen3-coder:free', 'openrouter/free', 'meta-llama/llama-3.3-70b-instruct:free'].filter(Boolean));
   let lastError = null;
   for (const key of keys) {
     for (const currentModel of models) {
       if (signal?.aborted) throw new DOMException('Generation stopped.', 'AbortError');
       try {
-        return await requestCompletion({ apiKey: key, model: currentModel, messages, stream, onToken, signal });
+        return await requestCompletion({
+          apiKey: key,
+          model: currentModel,
+          messages,
+          stream,
+          onToken,
+          signal,
+          maxTokens
+        });
       } catch (error) {
         if (error.name === 'AbortError') throw error;
         lastError = error;
@@ -38,7 +49,7 @@ export async function completeChat({ apiKey, apiKeys, model, messages, stream = 
   throw lastError || new Error('OpenRouter request failed.');
 }
 
-async function requestCompletion({ apiKey, model, messages, stream, onToken, signal }) {
+async function requestCompletion({ apiKey, model, messages, stream, onToken, signal, maxTokens }) {
   const response = await fetch(OPENROUTER_URL, {
     method: 'POST',
     headers: {
@@ -47,7 +58,7 @@ async function requestCompletion({ apiKey, model, messages, stream, onToken, sig
       'HTTP-Referer': typeof window !== 'undefined' ? window.location.origin : 'https://forge-ai.local',
       'X-Title': 'Forge AI'
     },
-    body: JSON.stringify({ model, messages, stream, temperature: 0.2, max_tokens: 8192 }),
+    body: JSON.stringify({ model, messages, stream, temperature: 0.15, max_tokens: maxTokens || 8192 }),
     signal
   });
   if (!response.ok) {
@@ -57,13 +68,14 @@ async function requestCompletion({ apiKey, model, messages, stream, onToken, sig
   if (!stream) {
     const data = await response.json();
     const message = data?.choices?.[0]?.message || {};
-    return extractText(message.content) || extractText(message.reasoning);
+    const content = extractText(message.content);
+    // Never prefer raw reasoning essays over empty content — caller will retry
+    return content || '';
   }
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
   let full = '';
-  let reasoning = '';
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -79,8 +91,6 @@ async function requestCompletion({ apiKey, model, messages, stream, onToken, sig
         const json = JSON.parse(payload);
         const delta = json?.choices?.[0]?.delta || {};
         const token = extractText(delta.content);
-        const think = extractText(delta.reasoning);
-        if (think) reasoning += think;
         if (token) {
           full += token;
           onToken?.(token, full);
@@ -89,10 +99,6 @@ async function requestCompletion({ apiKey, model, messages, stream, onToken, sig
         /* ignore */
       }
     }
-  }
-  if (!full.trim() && reasoning.trim()) {
-    onToken?.(reasoning, reasoning);
-    return reasoning;
   }
   return full;
 }

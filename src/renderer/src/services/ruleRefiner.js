@@ -6,8 +6,9 @@ const RULES_KEY = 'forge_rules';
 const RULES_LEGACY = 'forge.rules';
 
 /**
- * Read accepted training pairs and ask OpenRouter to refine a 5-bullet coding-style rule.
- * Persists to localStorage forge_rules (and forge.rules for compatibility).
+ * Read accepted training pairs and ask OpenRouter to refine a coding-style rule.
+ * Merges into existing rules — never deletes user rules.
+ * Persists to localStorage + Electron userData (via bridge.saveSettings).
  */
 export async function refineSystemRules({ apiKey, apiKeys, systemRules, currentRules }) {
   const dataset = await bridge.readTrainingDataset({ action: 'accepted', limit: 40 });
@@ -52,7 +53,7 @@ Return ONLY 5 concise bullet points that capture:
 1) preferred languages/stacks and file layout
 2) naming / structure / design patterns they favor
 3) UI/UX and styling preferences
-4) how they want prompts answered (plan vs code, verbosity)
+4) how they want prompts answered (always prefer building files over guiding)
 5) common edits they make vs what to avoid
 
 Format exactly:
@@ -93,6 +94,7 @@ Format exactly:
 
   const nextRules = mergeLearnedRule(currentRules || [], refinedRule);
   persistRules(nextRules);
+  await persistRulesDurable(nextRules);
 
   return {
     ok: true,
@@ -108,10 +110,18 @@ export function loadPersistedRules(fallback = []) {
     const raw = localStorage.getItem(RULES_KEY) || localStorage.getItem(RULES_LEGACY);
     if (!raw) return fallback;
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : fallback;
+    return Array.isArray(parsed) && parsed.length ? parsed : fallback;
   } catch {
     return fallback;
   }
+}
+
+/** Prefer localStorage (fast), then durable Electron settings, then starter. */
+export function resolveRules(loaded, fallback = []) {
+  const local = loadPersistedRules(null);
+  if (local) return local;
+  if (Array.isArray(loaded?.rules) && loaded.rules.length) return loaded.rules;
+  return fallback;
 }
 
 export function persistRules(rules) {
@@ -120,7 +130,22 @@ export function persistRules(rules) {
   localStorage.setItem(RULES_LEGACY, json);
 }
 
+/** Durable copy in Electron userData / web settings — survives secret logout. */
+export async function persistRulesDurable(rules) {
+  persistRules(rules);
+  try {
+    await bridge.saveSettings({ rules: rules || [], rulesUpdatedAt: Date.now() });
+  } catch {
+    /* localStorage already written */
+  }
+}
+
+export function rulesFromSettings(loaded, fallback = []) {
+  return resolveRules(loaded, fallback);
+}
+
 function mergeLearnedRule(rules, learned) {
+  // Only replace the learned-style slot — never drop user rules
   const without = (rules || []).filter((r) => r.id !== 'learned-style');
   return [learned, ...without];
 }
