@@ -40,6 +40,7 @@
     "productName": "Forge AI",
     "buildVersion": "1.0.0",
     "artifactName": "Forge-AI-Setup.${ext}",
+    "npmRebuild": false,
     "files": [
       "dist/**/*",
       "src/main/**/*",
