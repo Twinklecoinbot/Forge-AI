@@ -1,6 +1,7 @@
 const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const { exec } = require('child_process');
 
 let mainWindow;
@@ -275,6 +276,22 @@ ipcMain.handle('delete-file', async (_event, rel, rootOverride) => {
 });
 
 ipcMain.handle('save-settings', async (_event, settings) => saveSettings(settings || {}));
+ipcMain.handle('machine-capacity', async () => {
+  let freeDiskGB = null;
+  try {
+    const root = (process.env.SystemDrive || 'C:') + '\\';
+    const stat = fs.statfsSync(root);
+    freeDiskGB = Math.round(((stat.bavail * stat.bsize) / 1024 ** 3) * 10) / 10;
+  } catch {
+    /* disk stat is optional */
+  }
+  return {
+    totalRamGB: Math.round((os.totalmem() / 1024 ** 3) * 10) / 10,
+    freeRamGB: Math.round((os.freemem() / 1024 ** 3) * 10) / 10,
+    freeDiskGB
+  };
+});
+
 ipcMain.handle('load-settings', async () => ({
   ...loadSettings(),
   workspaceRoot: ensureWorkspace(),

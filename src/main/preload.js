@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld('forgeAPI', {
   deleteFile: (rel, root) => ipcRenderer.invoke('delete-file', rel, root),
   saveSettings: (settings) => ipcRenderer.invoke('save-settings', settings),
   loadSettings: () => ipcRenderer.invoke('load-settings'),
+  machineCapacity: () => ipcRenderer.invoke('machine-capacity'),
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
   logTrainingPair: (payload) => ipcRenderer.invoke('log-training-pair', payload),
   readTrainingDataset: (opts) => ipcRenderer.invoke('read-training-dataset', opts),
