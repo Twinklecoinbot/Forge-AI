@@ -110,17 +110,27 @@ export function treeFromFiles(files = []) {
 
 export function projectNameFromPrompt(text = '') {
   const clean = text.replace(/^\/\w+\s*/, '').replace(/\s+/g, ' ').trim();
-  return clean.slice(0, 42) || 'Untitled project';
+  if (/\b(twitter|\bx clone\b|\bclone x\b|\bx\.com\b)/i.test(clean)) return 'x-clone';
+  if (/\binstagram\b/i.test(clean)) return 'instagram-clone';
+  if (/\byoutube\b/i.test(clean)) return 'youtube-clone';
+  // Prefer a short title, not the entire long prompt as the product name
+  const titled = clean.match(/(?:build|create|make|clone|develop)\s+(?:an?\s+)?([^.!?\n]{3,40})/i);
+  if (titled?.[1]) return titled[1].trim().slice(0, 42);
+  return clean.slice(0, 28) || 'Untitled project';
 }
 
 export function previewHtml(files = []) {
   const candidates = files.filter((f) => /\.html?$/i.test(f.path || ''));
   const htmlFile =
-    candidates.find((f) => f.path === 'index.html' && !isStubPreviewHtml(f.content)) ||
-    candidates.find((f) => f.path.endsWith('/index.html') && !isStubPreviewHtml(f.content)) ||
-    candidates.find((f) => !isStubPreviewHtml(f.content)) ||
+    candidates.find((f) => f.path === 'index.html' && !isStubPreviewHtml(f.content) && !isGenericLandingHtml(f.content)) ||
+    candidates.find((f) => f.path.endsWith('/index.html') && !isStubPreviewHtml(f.content) && !isGenericLandingHtml(f.content)) ||
+    candidates.find((f) => !isStubPreviewHtml(f.content) && !isGenericLandingHtml(f.content)) ||
     candidates.find((f) => f.path === 'index.html') ||
     candidates[0];
+  const jsxFile = files.find((f) => /App\.(jsx|tsx)$/i.test(f.path || '')) || files.find((f) => /\.(jsx|tsx)$/i.test(f.path || ''));
+  if ((!htmlFile || isStubPreviewHtml(htmlFile.content) || isGenericLandingHtml(htmlFile.content)) && jsxFile) {
+    return sandboxPreviewHtml(jsxFile.content, files);
+  }
   if (!htmlFile) return null;
   const css = files
     .filter((f) => f.path.endsWith('.css') && !f.path.includes('node_modules'))
@@ -147,6 +157,40 @@ export function previewHtml(files = []) {
 
 function isStubPreviewHtml(content = '') {
   return /Project files are arranged|files are in the Code tab|Deployed with Forge AI/i.test(String(content || ''));
+}
+
+function isGenericLandingHtml(content = '') {
+  const c = String(content || '');
+  return /Built with Forge AI/i.test(c) && /A working product surface|Interactive preview ready/i.test(c);
+}
+
+/** Instant React + Tailwind preview when the project shipped JSX and no real index.html. */
+function sandboxPreviewHtml(appSource = '', files = []) {
+  const css = files
+    .filter((f) => f.path.endsWith('.css') && !f.path.includes('node_modules'))
+    .map((f) => f.content)
+    .join('\n');
+  const source = String(appSource || 'const App = () => <div className="p-8">Rendering application build...</div>;');
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>${css}</style>
+</head>
+<body class="bg-gray-950 text-white min-h-screen">
+  <div id="root"></div>
+  <script type="text/babel">
+    ${source}
+    const __ForgeRoot = typeof App !== 'undefined' ? App : function App(){ return React.createElement('div', {className:'p-8'}, 'Rendering application build...'); };
+    ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(__ForgeRoot));
+  </script>
+</body>
+</html>`;
 }
 
 const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|svg|ico)$/i;

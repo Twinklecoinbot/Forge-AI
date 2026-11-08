@@ -10,6 +10,19 @@ import { resolveIntentMode, statusLineForStage } from './intentMode.js';
 
 const CONTINUE_BUILD = `Continue the same project. Emit ONLY the remaining missing files as <<<FILE>>> blocks. Do not repeat files already listed. No Thinking Process. No guides.`;
 
+const FORCE_UI_BUILD = `CRITICAL UI REBUILD — previous files were a generic/wrong frontend (or missing a real product UI).
+
+Rebuild ONLY these files to match the USER BRIEF and any REFERENCE IMAGES exactly:
+<<<FILE path="index.html">>>
+<<<FILE path="styles.css">>>
+<<<FILE path="app.js">>>
+
+Rules:
+- Recreate the product the user asked for (e.g. X/Twitter clone = left nav, timeline, trends, compose, tweet cards — dark theme).
+- Do NOT emit a "Built with Forge AI" marketing landing page.
+- Make every control interactive in-browser (no top-window navigation).
+- Full HTML/CSS/JS contents inside FILE blocks. No essays.`;
+
 export function wantsDeploy(prompt = '') {
   return /(?:^|\s)\/deploy\b|deploy|publish|github pages|live link|host it|push to git/i.test(
     String(prompt || '')
@@ -127,16 +140,48 @@ export async function runForgeAgent({
   emit({ display: 'Thinking…', busy: true });
   const skill = intent.skill || 'build';
   const shouldDeploy = wantsDeploy(prompt) || skill === 'deploy';
-  const projectName = slugName(projectNameFromPrompt(prompt));
+
+  // Analyze reference images / bug report before writing files
+  let enrichedPrompt = prompt;
+  const imageCount = (attachments || []).filter((a) => a.kind === 'image' && a.dataUrl).length;
+  if (imageCount > 0 && !signal?.aborted) {
+    stages = setStage(stages, 'analyze', 'active', 'Reading reference images…');
+    emit({ display: 'Analyzing uploaded images / references…', activity: 'Vision analysis', busy: true });
+    try {
+      const { describeReferenceImages } = await import('./aiService.js');
+      const visionBrief = await describeReferenceImages({
+        apiKey,
+        apiKeys,
+        attachments,
+        prompt,
+        signal,
+        provider,
+        localBaseUrl
+      });
+      if (visionBrief) {
+        enrichedPrompt = `${prompt}\n\nVISUAL SPEC FROM REFERENCE IMAGES (match exactly):\n${visionBrief}`;
+      }
+    } catch {
+      /* continue without vision brief */
+    }
+  }
+
+  // Debug / self-heal: prefer patching existing workspace files
+  if ((skill === 'debug' || skill === 'fix') && previousFiles?.length) {
+    enrichedPrompt = `${enrichedPrompt}\n\nSELF-HEAL MODE: Inspect the workspace files below (already in context), find the bug the user described, and emit patched <<<FILE>>> blocks for every broken file. Keep working frontend (index.html/styles.css/app.js). Do not rebuild an unrelated product.`;
+  }
+
+  const projectName = productSlug(enrichedPrompt, attachments);
+
   stages = setStage(stages, 'analyze', 'done', 'Thought');
   emit({
-    display: `Building **${projectName}**…`,
-    activity: 'Explored workspace',
+    display: skill === 'debug' || skill === 'fix' ? `Fixing **${projectName}**…` : `Building **${projectName}**…`,
+    activity: imageCount ? `Analyzed ${imageCount} reference image(s)` : 'Explored workspace',
     busy: true
   });
 
-  stages = setStage(stages, 'build', 'active', 'Building…');
-  emit({ display: 'Building…', busy: true });
+  stages = setStage(stages, 'build', 'active', skill === 'debug' || skill === 'fix' ? 'Fixing…' : 'Building…');
+  emit({ display: skill === 'debug' || skill === 'fix' ? 'Finding and fixing…' : 'Building…', busy: true });
 
   const buildResult = await runForgePrompt({
     apiKey,
@@ -144,8 +189,10 @@ export async function runForgeAgent({
     model,
     rules,
     history,
-    prompt,
-    contextFiles,
+    prompt: enrichedPrompt,
+    contextFiles: previousFiles?.length
+      ? [...(contextFiles || []), ...previousFiles.filter((f) => isLikelyPatchTarget(f.path))].slice(0, 24)
+      : contextFiles,
     attachments,
     signal,
     provider,
@@ -165,10 +212,14 @@ export async function runForgeAgent({
     }
   });
 
-  let files = arrangeProjectFiles(buildResult.files || [], projectName);
+  let files = arrangeProjectFiles(buildResult.files || [], projectName, {
+    prompt: enrichedPrompt,
+    attachments,
+    allowGenericFallback: false
+  });
   let text = buildResult.text || '';
 
-  if (isBuildIntent(prompt) && files.length > 0 && files.length < 6 && !signal?.aborted) {
+  if (isBuildIntent(prompt) && files.length > 0 && files.length < 8 && !signal?.aborted) {
     stages = setStage(stages, 'build', 'active', `Building… ${files.length} files`);
     emit({ files, display: `Building… ${files.length} files`, busy: true });
     const cont = await runForgePrompt({
@@ -178,12 +229,12 @@ export async function runForgeAgent({
       rules,
       history: [
         ...(history || []),
-        { role: 'user', content: prompt },
+        { role: 'user', content: enrichedPrompt },
         { role: 'assistant', content: `Already wrote:\n${files.map((f) => `- ${f.path}`).join('\n')}` }
       ],
       prompt: CONTINUE_BUILD,
       contextFiles: files.slice(0, 20),
-      attachments: [],
+      attachments, // keep reference images on continue
       signal,
       provider,
       localBaseUrl,
@@ -198,8 +249,59 @@ export async function runForgeAgent({
         });
       }
     });
-    files = arrangeProjectFiles(mergeFiles(files, cont.files || []), projectName);
+    files = arrangeProjectFiles(mergeFiles(files, cont.files || []), projectName, {
+      prompt: enrichedPrompt,
+      attachments,
+      allowGenericFallback: false
+    });
     text = `${text}\n\n${cont.text || ''}`.trim();
+  }
+
+  // If UI still doesn't match the request (generic Forge landing / too thin), force a dedicated UI pass
+  if (!signal?.aborted && needsUiFidelityPass(files, enrichedPrompt, attachments)) {
+    stages = setStage(stages, 'build', 'active', 'Rebuilding UI to match request…');
+    emit({
+      files,
+      display: 'Rebuilding frontend to match your prompt / references…',
+      activity: 'UI fidelity pass',
+      busy: true
+    });
+    const uiPass = await runForgePrompt({
+      apiKey,
+      apiKeys,
+      model,
+      rules,
+      history: [
+        ...(history || []),
+        { role: 'user', content: enrichedPrompt },
+        {
+          role: 'assistant',
+          content: `Wrong UI shipped earlier (${files.map((f) => f.path).join(', ')}). Rebuilding product UI now.`
+        }
+      ],
+      prompt: `${FORCE_UI_BUILD}\n\nUSER BRIEF:\n${enrichedPrompt}`,
+      contextFiles: files.filter((f) => /\.(html|css|js)$/i.test(f.path)).slice(0, 6),
+      attachments,
+      signal,
+      provider,
+      localBaseUrl,
+      onToken: (_t, full) => {
+        const partial = extractFiles(full);
+        const merged = mergeFiles(files, partial);
+        emit({
+          text: full,
+          files: merged,
+          display: `Rebuilding UI… ${partial.length || 0} files`,
+          busy: true
+        });
+      }
+    });
+    files = arrangeProjectFiles(mergeFiles(files, uiPass.files || []), projectName, {
+      prompt: enrichedPrompt,
+      attachments,
+      allowGenericFallback: false
+    });
+    text = `${text}\n\n${uiPass.text || ''}`.trim();
   }
 
   if (!files.length) {
@@ -238,7 +340,21 @@ export async function runForgeAgent({
 
   stages = setStage(stages, 'arrange', 'active', 'Arranging files…');
   emit({ files, display: 'Arranging files…', busy: true });
-  files = arrangeProjectFiles(files, projectName);
+  files = arrangeProjectFiles(files, projectName, {
+    prompt: enrichedPrompt,
+    attachments,
+    allowGenericFallback: false
+  });
+  if (needsUiFidelityPass(files, enrichedPrompt, attachments)) {
+    const rescued = rescueProductUi(enrichedPrompt, attachments, projectName);
+    if (rescued.length) {
+      files = arrangeProjectFiles(mergeFiles(files.filter((f) => !isGenericForgeLanding(f.content || '')), rescued), projectName, {
+        prompt: enrichedPrompt,
+        attachments,
+        allowGenericFallback: false
+      });
+    }
+  }
   const changes = fileChangeStats(files, previousFiles);
   const totals = sumChanges(changes);
   stages = setStage(stages, 'arrange', 'done', `Arranged ${files.length} paths`);
@@ -286,8 +402,23 @@ export async function runForgeAgent({
     emit({ files, changes, previewUrl, display: 'Deploying to GitHub…', busy: true });
     try {
       deployResult = await deploy({ name: projectName, files, isPrivate: false });
-      if (deployResult?.live) previewUrl = deployResult.live;
-      stages = setStage(stages, 'deploy', 'done', deployResult?.live ? 'Live URL ready' : 'Published');
+      // Only swap Preview to live when Pages actually serves the app (not GitHub 404)
+      if (deployResult?.pagesReady && deployResult?.live) {
+        previewUrl = deployResult.live;
+      } else if (deployResult?.live) {
+        // Keep local Generated blob interactive; Live URL is stored for when Pages finishes
+        stages = setStage(stages, 'deploy', 'active', 'Waiting for Pages…');
+      }
+      stages = setStage(
+        stages,
+        'deploy',
+        'done',
+        deployResult?.pagesReady
+          ? 'Live URL ready'
+          : deployResult?.live
+            ? 'Published · Pages still building'
+            : 'Published'
+      );
     } catch (error) {
       stages = setStage(stages, 'deploy', 'done', `Deploy error: ${error.message}`);
     }
@@ -322,7 +453,8 @@ export async function runForgeAgent({
   };
 }
 
-export function arrangeProjectFiles(files = [], projectName = 'forge-app') {
+export function arrangeProjectFiles(files = [], projectName = 'forge-app', opts = {}) {
+  const { prompt = '', attachments = [], allowGenericFallback = false } = opts;
   const map = new Map();
   for (const file of files || []) {
     if (!file?.path || typeof file.content !== 'string') continue;
@@ -337,14 +469,12 @@ export function arrangeProjectFiles(files = [], projectName = 'forge-app') {
 
   const paths = [...map.keys()];
   const htmlEntry = [...map.values()].find((f) => /(^|\/)index\.html$/i.test(f.path) || /\.html$/i.test(f.path));
-  const stub =
-    htmlEntry &&
-    /Project files are arranged|files are in the Code tab|Deployed with Forge AI|Built with Forge AI/i.test(
-      htmlEntry.content || ''
-    ) &&
-    !/(twitter|x\.com|feed|timeline|tweet)/i.test(htmlEntry.content || '');
-  // Never overwrite a model-authored UI with the generic Forge landing — that caused wrong previews
-  if (!htmlEntry) {
+  const wantsSpecificUi = isSpecificProductRequest(prompt, attachments);
+  const stub = htmlEntry && isGenericForgeLanding(htmlEntry.content || '');
+
+  // Never inject the generic Forge marketing page for clone/reference builds —
+  // that was the root cause of "built something I didn't ask for".
+  if (!htmlEntry && allowGenericFallback && !wantsSpecificUi) {
     map.set('index.html', { path: 'index.html', content: defaultPreviewHtml(projectName) });
     if (![...map.keys()].some((p) => /(^|\/)styles\.css$/i.test(p))) {
       map.set('styles.css', { path: 'styles.css', content: defaultPreviewCss() });
@@ -352,7 +482,7 @@ export function arrangeProjectFiles(files = [], projectName = 'forge-app') {
     if (![...map.keys()].some((p) => /(^|\/)app\.js$/i.test(p))) {
       map.set('app.js', { path: 'app.js', content: defaultPreviewJs(projectName) });
     }
-  } else if (stub && String(htmlEntry.content || '').length < 1200) {
+  } else if (stub && !wantsSpecificUi && allowGenericFallback && String(htmlEntry.content || '').length < 900) {
     map.set(htmlEntry.path || 'index.html', {
       path: htmlEntry.path || 'index.html',
       content: defaultPreviewHtml(projectName)
@@ -366,6 +496,39 @@ export function arrangeProjectFiles(files = [], projectName = 'forge-app') {
   }
 
   return [...map.values()].sort((a, b) => a.path.localeCompare(b.path));
+}
+
+export function isGenericForgeLanding(content = '') {
+  const c = String(content || '');
+  if (/Project files are arranged|files are in the Code tab|Deployed with Forge AI/i.test(c)) return true;
+  if (/Built with Forge AI/i.test(c) && !/(timeline|tweet|whats happening|for you|following|sidebar nav)/i.test(c)) {
+    return true;
+  }
+  return false;
+}
+
+export function isSpecificProductRequest(prompt = '', attachments = []) {
+  const t = String(prompt || '');
+  if ((attachments || []).some((a) => a.kind === 'image')) return true;
+  return /\b(clone|twitter|\bx\b|instagram|youtube|dashboard|saas|ecommerce|shop|chat app|messenger)\b/i.test(t);
+}
+
+export function needsUiFidelityPass(files = [], prompt = '', attachments = []) {
+  const html = files.find((f) => /(^|\/)index\.html$/i.test(f.path));
+  if (!html) return isSpecificProductRequest(prompt, attachments) || isBuildIntent(prompt);
+  if (isGenericForgeLanding(html.content)) return true;
+  if (String(html.content || '').length < 1200 && isSpecificProductRequest(prompt, attachments)) return true;
+  if (/\b(twitter|\bx\b)\b/i.test(prompt) && !/(timeline|tweet|whats happening|for you)/i.test(html.content || '')) {
+    return true;
+  }
+  // Any image-referenced product that still looks like a thin marketing page
+  if ((attachments || []).some((a) => a.kind === 'image') && isGenericForgeLanding(html.content)) return true;
+  if ((attachments || []).some((a) => a.kind === 'image') && String(html.content || '').length < 2500) return true;
+  return false;
+}
+
+function isLikelyPatchTarget(path = '') {
+  return /\.(html?|css|js|jsx|ts|tsx|json|md|py|go|rs|java|php)$/i.test(path);
 }
 
 function mergeFiles(base = [], incoming = []) {
@@ -384,14 +547,214 @@ function sumChanges(changes = []) {
 }
 
 function buildAgentDisplay({ projectName, files, previewUrl, deployResult, totals }) {
+  const liveReady = Boolean(deployResult?.pagesReady && deployResult?.live);
   const lines = [
     `Built **${projectName}** · ${files.length} files in Code`,
     totals ? `Changes **+${totals.added}** **-${totals.removed}**` : null,
     previewUrl ? `Preview ready — open the Preview tab` : null,
-    deployResult?.live ? `Live: \`${deployResult.live}\`` : null,
+    liveReady ? `Live: \`${deployResult.live}\`` : deployResult?.live ? `Pages building: \`${deployResult.live}\` (Preview stays on Generated until it loads)` : null,
     deployResult?.repo?.html_url ? `Repo: \`${deployResult.repo.html_url}\`` : null
   ].filter(Boolean);
   return lines.join('\n');
+}
+
+function productSlug(prompt = '', attachments = []) {
+  const t = String(prompt || '');
+  const userPart = t.split('\n\nVISUAL SPEC')[0];
+  if (
+    /\b(twitter|x\.com)\b/i.test(t) ||
+    (/\bclone\b/i.test(t) && /\bx\b/i.test(t)) ||
+    /\bwhat'?s happening\b/i.test(t) ||
+    (/\bfor you\b/i.test(t) && /\b(premium|grok|timeline)\b/i.test(t))
+  ) {
+    return 'x-clone';
+  }
+  return slugName(projectNameFromPrompt(userPart));
+}
+
+/** Last resort when the model ships the generic Forge landing instead of the requested product. */
+function rescueProductUi(prompt = '', attachments = [], projectName = 'app') {
+  const t = String(prompt || '');
+  const hasImage = (attachments || []).some((a) => a.kind === 'image');
+  const wantsX =
+    /\b(twitter|x\.com|\bx\b|clone)\b/i.test(t) ||
+    /\b(what'?s happening|for you|subscribe to premium|grok)\b/i.test(t) ||
+    (hasImage && /\b(timeline|feed|tweet|for you|premium|notifications)\b/i.test(t));
+  if (!wantsX && !hasImage) return [];
+  if (wantsX) {
+    return [
+      { path: 'index.html', content: xCloneHtml() },
+      { path: 'styles.css', content: xCloneCss() },
+      { path: 'app.js', content: xCloneJs() }
+    ];
+  }
+  return [];
+}
+
+function xCloneHtml() {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>X</title>
+  <link rel="stylesheet" href="styles.css"/>
+</head>
+<body>
+  <div class="app">
+    <aside class="nav">
+      <div class="logo">𝕏</div>
+      <button class="nav-item active" data-tab="home">Home</button>
+      <button class="nav-item" data-tab="explore">Explore</button>
+      <button class="nav-item" data-tab="notifications">Notifications</button>
+      <button class="nav-item" data-tab="messages">Messages</button>
+      <button class="nav-item" data-tab="grok">Grok</button>
+      <button class="post-btn" id="open-composer">Post</button>
+      <div class="me"><strong>You</strong><span>@you</span></div>
+    </aside>
+    <main>
+      <div class="tabs">
+        <button class="tab active" data-feed="foryou">For you</button>
+        <button class="tab" data-feed="following">Following</button>
+      </div>
+      <form class="composer" id="composer">
+        <div class="avatar">Y</div>
+        <div class="composer-body">
+          <textarea id="compose-text" placeholder="What's happening?" maxlength="280"></textarea>
+          <div class="composer-bar">
+            <span id="count">0 / 280</span>
+            <button type="submit">Post</button>
+          </div>
+        </div>
+      </form>
+      <section id="feed"></section>
+    </main>
+    <aside class="rail">
+      <input class="search" id="search" placeholder="Search"/>
+      <div class="card">
+        <h3>Subscribe to Premium</h3>
+        <p>Get rid of ads and unlock more features.</p>
+        <button type="button" id="premium">Subscribe</button>
+      </div>
+      <div class="card">
+        <h3>Today's News</h3>
+        <ul id="news"></ul>
+      </div>
+    </aside>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>`;
+}
+
+function xCloneCss() {
+  return `:root { color-scheme: dark; }
+* { box-sizing: border-box; }
+body { margin: 0; background: #000; color: #e7e9ea; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+.app { display: grid; grid-template-columns: 260px minmax(0, 600px) 340px; min-height: 100vh; max-width: 1280px; margin: 0 auto; }
+.nav { padding: 12px 16px; position: sticky; top: 0; height: 100vh; }
+.logo { font-size: 28px; padding: 8px 12px; }
+.nav-item, .post-btn, .tab, .composer-bar button, .card button { border: 0; background: transparent; color: inherit; cursor: pointer; font: inherit; }
+.nav-item { display: flex; width: 100%; text-align: left; padding: 12px 16px; border-radius: 999px; font-size: 18px; }
+.nav-item.active, .nav-item:hover { background: #181818; }
+.post-btn, .composer-bar button, .card button { background: #e7e9ea; color: #000; border-radius: 999px; font-weight: 700; padding: 12px 18px; }
+.post-btn { width: 90%; margin-top: 12px; }
+.me { margin-top: 24px; padding: 12px; border-radius: 16px; }
+.me span { display: block; color: #71767b; font-size: 13px; }
+main { border-left: 1px solid #2f3336; border-right: 1px solid #2f3336; min-height: 100vh; }
+.tabs { display: flex; border-bottom: 1px solid #2f3336; position: sticky; top: 0; background: rgba(0,0,0,.85); backdrop-filter: blur(8px); }
+.tab { flex: 1; padding: 16px; color: #71767b; }
+.tab.active { color: #e7e9ea; box-shadow: inset 0 -3px #1d9bf0; }
+.composer { display: flex; gap: 12px; padding: 12px 16px; border-bottom: 1px solid #2f3336; }
+.avatar { width: 40px; height: 40px; border-radius: 999px; background: #1d9bf0; display: grid; place-items: center; font-weight: 700; }
+textarea { width: 100%; min-height: 64px; resize: vertical; background: transparent; color: inherit; border: 0; font: inherit; font-size: 18px; outline: none; }
+.composer-bar { display: flex; justify-content: flex-end; align-items: center; gap: 12px; color: #71767b; font-size: 13px; }
+.composer-bar button { padding: 8px 16px; }
+.post { display: flex; gap: 12px; padding: 12px 16px; border-bottom: 1px solid #2f3336; }
+.post h4 { margin: 0; font-size: 15px; }
+.post h4 span { color: #71767b; font-weight: 400; }
+.post p { margin: 4px 0 8px; line-height: 1.4; }
+.actions { display: flex; gap: 18px; color: #71767b; font-size: 13px; }
+.actions button { background: none; border: 0; color: inherit; cursor: pointer; }
+.actions button.liked { color: #f91880; }
+.rail { padding: 8px 16px; }
+.search { width: 100%; background: #202327; border: 0; color: inherit; border-radius: 999px; padding: 12px 16px; margin: 6px 0 16px; }
+.card { background: #16181c; border-radius: 16px; padding: 16px; margin-bottom: 16px; }
+.card h3 { margin: 0 0 8px; }
+.card p, .card li { color: #e7e9ea; font-size: 14px; }
+.card ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }
+.hidden { display: none; }
+@media (max-width: 1000px) { .app { grid-template-columns: 72px minmax(0,1fr); } .rail, .nav-item { font-size: 0; } .logo { font-size: 24px; } }`;
+}
+
+function xCloneJs() {
+  return `(() => {
+  const seed = [
+    { id: 1, name: 'Forge', handle: '@forge', text: 'Ship the product, not a placeholder landing page.', likes: 128, liked: false, feed: 'foryou' },
+    { id: 2, name: 'Design', handle: '@design', text: 'Three columns: nav, timeline, news. Dark theme. Real buttons.', likes: 86, liked: false, feed: 'foryou' },
+    { id: 3, name: 'Following', handle: '@follows', text: 'This post shows on Following.', likes: 12, liked: false, feed: 'following' }
+  ];
+  const news = ['Markets move after hours', 'New creator tools roll out', 'Local events trending near you'];
+  let posts = seed.slice();
+  let feed = 'foryou';
+  const feedEl = document.getElementById('feed');
+  const textEl = document.getElementById('compose-text');
+  const countEl = document.getElementById('count');
+  const newsEl = document.getElementById('news');
+  news.forEach((n) => { const li = document.createElement('li'); li.textContent = n; newsEl.appendChild(li); });
+  const render = () => {
+    const q = (document.getElementById('search').value || '').toLowerCase();
+    feedEl.innerHTML = posts.filter((p) => (feed === 'following' ? p.feed === 'following' || p.mine : true) && (!q || (p.text + p.name).toLowerCase().includes(q))).map((p) => \`
+      <article class="post" data-id="\${p.id}">
+        <div class="avatar">\${p.name.slice(0,1)}</div>
+        <div>
+          <h4>\${p.name} <span>\${p.handle}</span></h4>
+          <p>\${p.text}</p>
+          <div class="actions">
+            <button data-act="reply">Reply</button>
+            <button data-act="repost">Repost</button>
+            <button data-act="like" class="\${p.liked ? 'liked' : ''}">Like \${p.likes}</button>
+          </div>
+        </div>
+      </article>\`).join('') || '<p style="padding:16px;color:#71767b">No posts</p>';
+  };
+  document.getElementById('composer').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const text = textEl.value.trim();
+    if (!text) return;
+    posts.unshift({ id: Date.now(), name: 'You', handle: '@you', text, likes: 0, liked: false, feed, mine: true });
+    textEl.value = '';
+    countEl.textContent = '0 / 280';
+    render();
+  });
+  textEl.addEventListener('input', () => { countEl.textContent = textEl.value.length + ' / 280'; });
+  feedEl.addEventListener('click', (e) => {
+    const btn = e.target.closest('button');
+    const post = e.target.closest('.post');
+    if (!btn || !post) return;
+    const item = posts.find((p) => String(p.id) === post.dataset.id);
+    if (!item) return;
+    if (btn.dataset.act === 'like') { item.liked = !item.liked; item.likes += item.liked ? 1 : -1; }
+    if (btn.dataset.act === 'repost') item.text = item.text;
+    if (btn.dataset.act === 'reply') textEl.value = '@' + item.handle.replace('@','') + ' ';
+    render();
+  });
+  document.querySelectorAll('.tab').forEach((tab) => tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach((t) => t.classList.remove('active'));
+    tab.classList.add('active');
+    feed = tab.dataset.feed;
+    render();
+  }));
+  document.querySelectorAll('.nav-item').forEach((n) => n.addEventListener('click', () => {
+    document.querySelectorAll('.nav-item').forEach((x) => x.classList.remove('active'));
+    n.classList.add('active');
+    document.querySelector('main').dataset.view = n.dataset.tab;
+  }));
+  document.getElementById('search').addEventListener('input', render);
+  document.getElementById('premium').addEventListener('click', () => alert('Premium is a demo toggle in this preview.'));
+  document.getElementById('open-composer').addEventListener('click', () => textEl.focus());
+  render();
+})();`;
 }
 
 function defaultPreviewHtml(name) {

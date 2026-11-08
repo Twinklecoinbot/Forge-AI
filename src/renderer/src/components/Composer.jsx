@@ -125,17 +125,61 @@ export default function Composer({ compact = false }) {
                   key={file.id}
                   className={`inline-flex max-w-[220px] items-center gap-2 rounded-xl border px-2 py-1.5 text-[11px] ${meta.color}`}
                 >
-                  {file.kind === 'image' && file.dataUrl ? (
-                    <img src={file.dataUrl} alt="" className="h-9 w-9 rounded object-cover" />
-                  ) : (
-                    <span className="grid h-9 w-9 place-items-center rounded-md bg-black/25 text-[10px] font-bold">
-                      {meta.badge}
+                  <button
+                    type="button"
+                    className="inline-flex min-w-0 flex-1 items-center gap-2 text-left"
+                    title="View attachment"
+                    onClick={() => {
+                      if (file.kind === 'image' && file.dataUrl) {
+                        const w = window.open('', '_blank');
+                        if (w) {
+                          w.document.write(
+                            `<title>${file.name || 'image'}</title><img src="${file.dataUrl}" style="max-width:100%;height:auto;background:#111"/>`
+                          );
+                        }
+                      } else if (file.content) {
+                        const w = window.open('', '_blank');
+                        if (w) {
+                          w.document.write(
+                            `<pre style="white-space:pre-wrap;padding:16px;background:#111;color:#eee">${String(file.content)
+                              .replace(/&/g, '&amp;')
+                              .replace(/</g, '&lt;')}</pre>`
+                          );
+                        }
+                      }
+                    }}
+                  >
+                    {file.kind === 'image' && file.dataUrl ? (
+                      <img src={file.dataUrl} alt="" className="h-9 w-9 rounded object-cover" />
+                    ) : (
+                      <span className="grid h-9 w-9 place-items-center rounded-md bg-black/25 text-[10px] font-bold">
+                        {meta.badge}
+                      </span>
+                    )}
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate font-medium underline-offset-2 hover:underline">{file.name}</span>
+                      <span className="block text-[10px] opacity-80">{file.previewNote || meta.label}</span>
                     </span>
-                  )}
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate font-medium">{file.name}</span>
-                    <span className="block text-[10px] opacity-80">{file.previewNote || meta.label}</span>
-                  </span>
+                  </button>
+                  <button
+                    type="button"
+                    title="Copy"
+                    className="opacity-70 hover:opacity-100"
+                    onClick={async () => {
+                      try {
+                        if (file.kind === 'image' && file.dataUrl && navigator.clipboard?.write) {
+                          const blob = await (await fetch(file.dataUrl)).blob();
+                          await navigator.clipboard.write([new ClipboardItem({ [blob.type || 'image/png']: blob })]);
+                        } else {
+                          await navigator.clipboard.writeText(file.content || file.name || '');
+                        }
+                      } catch {
+                        /* ignore */
+                      }
+                    }}
+                  >
+                    Copy
+                  </button>
                   <button onClick={() => setAttachments((a) => a.filter((x) => x.id !== file.id))} className="opacity-70 hover:opacity-100">
                     <X size={12} />
                   </button>

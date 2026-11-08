@@ -285,7 +285,7 @@ function AssistantReply({
         </button>
       ) : null}
 
-      {message.deployResult?.live && message.deliveryComplete ? (
+      {message.deployResult?.pagesReady && message.deployResult?.live && message.deliveryComplete ? (
         <a
           href={message.deployResult.live}
           target="_blank"
@@ -446,21 +446,101 @@ function IconAction({ icon: Icon, label, onClick }) {
 
 function AttachmentChip({ file }) {
   const meta = attachmentKindMeta(file);
+  const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const isImage = file.kind === 'image' && file.dataUrl;
+
+  const copy = async (e) => {
+    e?.stopPropagation?.();
+    try {
+      if (isImage && navigator.clipboard?.write && window.ClipboardItem) {
+        const blob = await (await fetch(file.dataUrl)).blob();
+        await navigator.clipboard.write([new ClipboardItem({ [blob.type || 'image/png']: blob })]);
+      } else {
+        await navigator.clipboard.writeText(file.dataUrl || file.content || file.name || '');
+      }
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1200);
+    } catch {
+      try {
+        await navigator.clipboard.writeText(file.name || '');
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1200);
+      } catch {
+        /* ignore */
+      }
+    }
+  };
+
   return (
-    <span className={`inline-flex max-w-full items-center gap-2 rounded-xl border px-2.5 py-1.5 text-[11px] ${meta.color}`}>
-      {file.kind === 'image' && file.dataUrl ? (
-        <img src={file.dataUrl} alt="" className="h-8 w-8 rounded object-cover" />
-      ) : (
-        <FileIcon path={file.name || file.path} className="h-5 w-5" />
-      )}
-      <span className="min-w-0">
-        <span className="block truncate font-medium">{file.name}</span>
-        <span className="block text-[10px] opacity-80">
-          {file.previewNote || meta.label}
-          {file.size ? ` · ${formatSize(file.size)}` : ''}
+    <>
+      <button
+        type="button"
+        onClick={() => (isImage || file.content ? setOpen(true) : null)}
+        className={`inline-flex max-w-full items-center gap-2 rounded-xl border px-2.5 py-1.5 text-left text-[11px] ${meta.color} hover:brightness-110`}
+        title={isImage ? 'Click to view' : 'Click to open'}
+      >
+        {isImage ? (
+          <img src={file.dataUrl} alt={file.name || ''} className="h-8 w-8 rounded object-cover" />
+        ) : (
+          <FileIcon path={file.name || file.path} className="h-5 w-5" />
+        )}
+        <span className="min-w-0">
+          <span className="block truncate font-medium underline-offset-2 hover:underline">{file.name}</span>
+          <span className="block text-[10px] opacity-80">
+            {file.previewNote || meta.label}
+            {file.size ? ` · ${formatSize(file.size)}` : ''}
+          </span>
         </span>
-      </span>
-    </span>
+      </button>
+      {open ? (
+        <div
+          className="fixed inset-0 z-[80] grid place-items-center bg-black/70 p-6"
+          onClick={() => setOpen(false)}
+        >
+          <div
+            className="max-h-[90vh] w-full max-w-3xl overflow-auto rounded-2xl border border-[var(--border)] bg-[var(--bg-elevated)] p-4 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mb-3 flex items-center justify-between gap-2">
+              <div className="truncate text-[13px] font-medium">{file.name}</div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  className="rounded-md border border-[var(--border)] px-2 py-1 text-[12px]"
+                  onClick={copy}
+                >
+                  {copied ? 'Copied' : 'Copy'}
+                </button>
+                {isImage ? (
+                  <a
+                    href={file.dataUrl}
+                    download={file.name || 'image.png'}
+                    className="rounded-md border border-[var(--border)] px-2 py-1 text-[12px]"
+                  >
+                    Download
+                  </a>
+                ) : null}
+                <button
+                  type="button"
+                  className="rounded-md border border-[var(--border)] px-2 py-1 text-[12px]"
+                  onClick={() => setOpen(false)}
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+            {isImage ? (
+              <img src={file.dataUrl} alt={file.name || ''} className="mx-auto max-h-[75vh] max-w-full rounded-lg object-contain" />
+            ) : (
+              <pre className="forge-scroll max-h-[70vh] overflow-auto whitespace-pre-wrap rounded-lg bg-[var(--bg)] p-3 text-[12px] text-[var(--text)]">
+                {file.content || file.previewNote || file.name}
+              </pre>
+            )}
+          </div>
+        </div>
+      ) : null}
+    </>
   );
 }
 

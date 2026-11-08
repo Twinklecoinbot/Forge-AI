@@ -10,8 +10,8 @@ export function resolveIntentMode(prompt = '') {
   const text = String(prompt || '').trim();
   const skill = detectSkill(text);
 
-  if (skill === 'build' || skill === 'deploy' || skill === 'debug' || skill === 'review') {
-    return { mode: 'execute', skill: skill || 'build' };
+  if (skill === 'build' || skill === 'deploy' || skill === 'debug' || skill === 'fix' || skill === 'review') {
+    return { mode: 'execute', skill: skill === 'fix' ? 'debug' : skill || 'build' };
   }
   if (skill === 'plan') {
     // /plan still ships starter files (execute-lite), not a long essay
@@ -19,6 +19,14 @@ export function resolveIntentMode(prompt = '') {
   }
   if (skill === 'rules' || skill === 'research') {
     return { mode: isBuildIntent(text) ? 'execute' : 'guide', skill };
+  }
+
+  // Natural-language bug reports → self-heal / debug execute
+  if (
+    /\b(fix|bug|broken|error|crash|not working|doesn'?t work|self[\s-]?heal|repair|patch)\b/i.test(text) &&
+    !isGuideIntent(text)
+  ) {
+    return { mode: 'execute', skill: 'debug' };
   }
 
   if (isGuideIntent(text) && !isBuildIntent(text)) {

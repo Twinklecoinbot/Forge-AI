@@ -126,7 +126,7 @@ export async function runForgePrompt({
     text = await completeChat({
       apiKey,
       apiKeys,
-      model: provider === 'local' ? codingModel : 'qwen/qwen3-coder:free',
+      model: imageAttachments.length ? codingModel : provider === 'local' ? codingModel : 'qwen/qwen3-coder:free',
       messages: [
         ...baseMessages,
         { role: 'assistant', content: clip(text, 1500) },
@@ -158,12 +158,13 @@ export async function runForgePrompt({
 }
 
 function preferCodingModel(model, skill, { hasImages } = {}) {
-  // Vision-capable free models when user attaches reference screenshots
+  // Vision-capable models when user attaches reference screenshots (coder-only models ignore images)
   if (hasImages) {
     if (model && /gemini|gpt-4o|claude|vision|llama-3\.2|qwen2\.5-vl|pixtral/i.test(model)) return model;
-    return 'google/gemini-2.0-flash-exp:free';
+    // Prefer free vision endpoints; fall through retry will still keep images in the payload
+    return 'google/gemini-2.0-flash-001:free';
   }
-  if (skill === 'build' || skill === 'debug' || skill === 'review' || skill === 'deploy') {
+  if (skill === 'build' || skill === 'debug' || skill === 'fix' || skill === 'review' || skill === 'deploy') {
     if (!model || /deepseek-r1|reasoning|r1/i.test(model) || model === 'openrouter/free') {
       return 'qwen/qwen3-coder:free';
     }
@@ -185,6 +186,55 @@ function buildFidelityBrief(prompt = '', attachments = []) {
       : null
   ].filter(Boolean);
   return lines.join('\n');
+}
+
+/**
+ * Vision pass: turn screenshots into a concrete UI spec the coding model can follow.
+ * Uses a vision-capable OpenRouter model; returns empty string on failure.
+ */
+export async function describeReferenceImages({
+  apiKey,
+  apiKeys,
+  attachments = [],
+  prompt = '',
+  signal,
+  provider,
+  localBaseUrl
+}) {
+  const images = (attachments || []).filter((a) => a.kind === 'image' && a.dataUrl).slice(0, 4);
+  if (!images.length || provider === 'local') return '';
+  try {
+    const text = await completeChat({
+      apiKey,
+      apiKeys,
+      model: 'google/gemini-2.0-flash-001:free',
+      messages: [
+        {
+          role: 'system',
+          content:
+            'You extract UI specs from screenshots for a coding agent. Reply with a compact structured brief only: layout regions, colors, components, interactions, typography. No code. No markdown fences.'
+        },
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text: `User asked:\n${clip(prompt, 2000)}\n\nDescribe the product UI in the image(s) so another model can rebuild it in HTML/CSS/JS. Include: overall layout (columns/panels), nav items, feed/cards, sidebars, colors (#hex if visible), fonts feel, interactive controls.`
+            },
+            ...images.map((img) => ({ type: 'image_url', image_url: { url: img.dataUrl } }))
+          ]
+        }
+      ],
+      stream: false,
+      signal,
+      maxTokens: 1200,
+      provider: provider || 'openrouter',
+      localBaseUrl
+    });
+    return clip(String(text || '').trim(), 2500);
+  } catch {
+    return '';
+  }
 }
 
 function coerceFenceFiles(text = '') {

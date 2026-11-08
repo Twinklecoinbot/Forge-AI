@@ -39,8 +39,18 @@ export async function completeChat({
 
   const keys = unique([apiKey, ...(apiKeys || [])].filter(Boolean));
   if (!keys.length) throw new Error('Add your OpenRouter API key in Customize to run the engine.');
+  const hasImages = messagesHaveImages(messages);
   const models = unique(
-    [model, 'qwen/qwen3-coder:free', 'openrouter/free', 'meta-llama/llama-3.3-70b-instruct:free'].filter(Boolean)
+    (hasImages
+      ? [
+          model,
+          'google/gemini-2.0-flash-001:free',
+          'google/gemini-2.0-flash-exp:free',
+          'meta-llama/llama-3.2-11b-vision-instruct:free',
+          'qwen/qwen3-coder:free'
+        ]
+      : [model, 'qwen/qwen3-coder:free', 'openrouter/free', 'meta-llama/llama-3.3-70b-instruct:free']
+    ).filter(Boolean)
   );
   let lastError = null;
   for (const key of keys) {
@@ -50,7 +60,7 @@ export async function completeChat({
         return await requestCompletion({
           apiKey: key,
           model: currentModel,
-          messages,
+          messages: messagesForModel(messages, currentModel),
           stream,
           onToken,
           signal,
@@ -222,6 +232,30 @@ function extractText(value) {
   if (Array.isArray(value)) return value.map((part) => extractText(part?.text || part?.content || part)).join('');
   if (typeof value === 'object') return extractText(value.text || value.content || '');
   return String(value);
+}
+
+function modelAcceptsImages(model = '') {
+  return /gemini|gpt-4o|claude|vision|llama-3\.2|qwen2\.5-vl|pixtral/i.test(model);
+}
+
+/** Keep image parts for vision models. Text-only fallbacks get the prompt without a payload they reject. */
+function messagesForModel(messages = [], model = '') {
+  if (modelAcceptsImages(model) || !messagesHaveImages(messages)) return messages;
+  return messages.map((m) => {
+    if (!Array.isArray(m.content)) return m;
+    const text = m.content
+      .map((part) => (typeof part === 'string' ? part : part?.type === 'text' ? part.text || '' : ''))
+      .filter(Boolean)
+      .join('\n');
+    return { role: m.role, content: text };
+  });
+}
+
+function messagesHaveImages(messages = []) {
+  return messages.some((m) => {
+    if (!Array.isArray(m?.content)) return false;
+    return m.content.some((part) => part?.type === 'image_url' || part?.type === 'image');
+  });
 }
 
 function unique(list) {

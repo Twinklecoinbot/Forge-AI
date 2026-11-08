@@ -22,11 +22,16 @@ export default function Header() {
             : 'chat';
 
   const onTab = (tab) => {
-    if (activeProject?.id) {
+    // A standalone New Chat stays in Chats — header Chat must not jump back to a project chat
+    if (tab.mode === 'chat' && activeChat && !activeChat.projectId) {
+      setWorkspaceMode('chat');
+      setView(activeChat.messages?.length ? 'agent' : 'home');
+      return;
+    }
+    if (activeProject?.id && activeChat?.projectId) {
       if (tab.mode === 'browser') {
-        const live = activeProject.liveUrl || activeProject.githubRepo?.live || '';
         const preview = activeProject.previewUrl || '';
-        if (live || preview) setBrowserUrl(live || preview);
+        if (preview) setBrowserUrl(preview);
       }
       openProject(activeProject.id, { mode: tab.mode });
       return;

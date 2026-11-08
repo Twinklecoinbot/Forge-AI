@@ -84,9 +84,27 @@ function collectFolderFiles(dir, rel = '', limit = 400) {
   return files;
 }
 
+function resolveAppIcon() {
+  const candidates = [
+    path.join(__dirname, '../renderer/public/logos/icon.ico'),
+    path.join(__dirname, '../renderer/public/logos/icon.png'),
+    path.join(__dirname, '../../dist/logos/icon.ico'),
+    path.join(__dirname, '../../dist/logos/icon.png')
+  ];
+  for (const p of candidates) {
+    try {
+      if (fs.existsSync(p)) return p;
+    } catch {
+      /* try next */
+    }
+  }
+  return undefined;
+}
+
 function createWindow() {
   ensureWorkspace();
   const isDev = !app.isPackaged;
+  const icon = resolveAppIcon();
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
@@ -95,6 +113,7 @@ function createWindow() {
     backgroundColor: '#181818',
     title: 'Forge AI',
     autoHideMenuBar: true,
+    ...(icon ? { icon } : {}),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,

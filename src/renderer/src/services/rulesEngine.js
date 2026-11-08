@@ -4,7 +4,7 @@ export const STARTER_RULES = [
     title: 'Execute, do not guide',
     enabled: true,
     body:
-      'You are an execution engine inside Forge AI. When the user asks for an app, website, API, clone, or system: BUILD it by emitting <<<FILE>>> blocks. Never write a Thinking Process essay. Never tell the user to open VS Code, Cursor, or create folders manually — Forge writes files for them. Prefer working code over advice.'
+      'You are an execution engine inside Forge AI. When the user asks for an app, website, API, clone, or system: BUILD it by emitting <<<FILE>>> blocks. Match their prompt, uploaded files, and reference images exactly — never substitute a generic landing page. If they report a bug, find it in the existing files and emit the fixed files. Never write a Thinking Process essay. Never tell the user to open VS Code, Cursor, or create folders manually.'
   },
   {
     id: 'stack',
@@ -33,21 +33,30 @@ export const STARTER_RULES = [
     enabled: true,
     body:
       'Emit each file as:\n<<<FILE path="relative/path.ext">>>\n...full file contents...\n<<<END FILE>>>\nGenerate every file required to run. End with ≤6 short prose lines (what shipped). No code in closing prose.'
+  },
+  {
+    id: 'self-heal',
+    title: 'Self-heal on bug reports',
+    enabled: true,
+    body:
+      'When the user reports a bug, error, broken UI, or asks to fix/repair/self-heal: locate the root cause in the workspace files, emit corrected <<<FILE>>> patches, and keep Preview working. Prefer minimal surgical fixes over rewriting unrelated files. If they describe a wrong frontend vs their prompt/images, rebuild index.html/styles.css/app.js to match.'
   }
 ];
 
 export const SKILL_HINTS = {
   plan: 'List a 6-line file tree, THEN immediately emit starter files with the FILE contract. Do not stop at planning.',
-  build: 'Build the complete requested app now. Emit every front-end and back-end file required to run it. Zero guides.',
+  build: 'Build the complete requested app now. Emit every front-end and back-end file required to run it. Zero guides. Match reference images exactly.',
   review: 'Name bugs briefly, then emit patched files. Do not stop at a written review.',
   deploy: 'Emit configs/scripts so the project runs. Include exact npm scripts in package.json.',
-  debug: 'Write the corrected files. Do not stop at diagnosis.',
+  debug:
+    'Self-heal mode: locate the bug in the described system (Forge app or the user project), then emit corrected <<<FILE>>> patches only. Prefer minimal diffs. Do not stop at diagnosis.',
+  fix: 'Same as debug — find the root cause and ship corrected files via the FILE contract.',
   research: 'Investigate, then implement with FILE blocks.',
   rules: 'Obey only the user rules and the FILE output contract.'
 };
 
 const BUILD_HINT =
-  /\b(build|create|clone|scaffold|generate|make|implement|develop|app|website|saas|dashboard|twitter|x clone|full[\s-]?stack)\b/i;
+  /\b(build|create|clone|scaffold|generate|make|implement|develop|app|website|saas|dashboard|twitter|x clone|full[\s-]?stack|fix|bug|error|broken|self[\s-]?heal)\b/i;
 
 export function isBuildIntent(prompt = '') {
   return BUILD_HINT.test(String(prompt || ''));

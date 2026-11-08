@@ -11,11 +11,12 @@ import {
   readBrowserFile
 } from '../services/fileParser.js';
 import {
-  createRepo,
+  ensureRepo,
   enablePages,
   getGithubUser,
   listRepos,
   pagesUrl,
+  probeLiveUrl,
   pushFiles,
   setRepoHomepage,
   waitForPages
@@ -155,6 +156,8 @@ export function ForgeProvider({ children }) {
   const activeProjectIdRef = useRef(activeProjectId);
   const hydratedRef = useRef(false);
   const chatsRef = useRef(chats);
+  const activeChatIdRef = useRef(activeChatId);
+  const lastWriteProjectIdRef = useRef(null);
 
   const activeProject = projects.find((p) => p.id === activeProjectId) || null;
   const files = activeProject?.files || [];
@@ -170,6 +173,9 @@ export function ForgeProvider({ children }) {
   useEffect(() => {
     activeProjectIdRef.current = activeProjectId;
   }, [activeProjectId]);
+  useEffect(() => {
+    activeChatIdRef.current = activeChatId;
+  }, [activeChatId]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -484,7 +490,9 @@ export function ForgeProvider({ children }) {
   };
 
   const upsertFiles = (incoming, projectName, opts = {}) => {
-    let targetId = activeProjectId;
+    let targetId = activeProjectIdRef.current;
+    const currentChat = chatsRef.current.find((c) => c.id === activeChatIdRef.current);
+    const keepStandaloneChat = Boolean(currentChat && !currentChat.projectId);
     setProjects((prev) => {
       let list = prev;
       if (!list.length || !targetId) {
@@ -493,13 +501,15 @@ export function ForgeProvider({ children }) {
         created.chatId = chat.id;
         targetId = created.id;
         list = [created, ...list];
+        activeProjectIdRef.current = created.id;
         setActiveProjectId(created.id);
         setChats((c) => {
           if (c.some((x) => x.projectId === created.id && !x.archived)) return c;
           return [chat, ...c];
         });
-        setActiveChatId(chat.id);
+        if (!keepStandaloneChat) setActiveChatId(chat.id);
       }
+      lastWriteProjectIdRef.current = targetId;
       return list.map((project) => {
         if (project.id !== targetId) return project;
         const map = new Map(project.files.map((f) => [f.path, f]));
@@ -524,57 +534,34 @@ export function ForgeProvider({ children }) {
   };
 
   const newChat = () => {
-    const chat = defaultChat(
-      activeProjectId
-        ? { title: activeProject?.name || 'New Chat', projectId: activeProjectId }
-        : {}
-    );
+    // Standalone chat in the Chats section — never replaces the project chat
+    const chat = defaultChat({ title: 'New Chat', projectId: null });
     setChats((c) => [chat, ...c]);
     setActiveChatId(chat.id);
-    if (activeProjectId) {
-      setProjects((ps) => ps.map((p) => (p.id === activeProjectId ? { ...p, chatId: chat.id } : p)));
-    }
+    setActiveProjectId(null);
     setView('home');
     setSidebarTab('chats');
+    setWorkspaceMode('chat');
     setComposer('');
     setAttachedPaths([]);
     setAttachments([]);
   };
 
-  /** Confirm before creating an empty chat so history is never lost by accident. */
   const requestNewChat = () => {
-    const hasHistory = Boolean(activeChat?.messages?.length);
-    if (hasHistory) {
-      const ok = window.confirm('Open a new chat? Your current chat stays saved in the sidebar.');
-      if (!ok) return;
-    } else if (chats.some((c) => c.messages?.length)) {
-      const ok = window.confirm('Open a new chat?');
-      if (!ok) return;
-    }
     newChat();
   };
 
-  /** Sidebar Chats: ask to open a new chat (confirm), otherwise stay on current. */
+  /** Open the Chats list on the current chat. New Chat is the pencil button only. */
   const openChatsHome = () => {
     setSidebarTab('chats');
-    const wantNew = window.confirm(
-      activeChat?.messages?.length || chats.some((c) => c.messages?.length)
-        ? 'Open a new chat?\n\nOK = new chat (current chat stays saved)\nCancel = stay on current chat'
-        : 'Create a new chat?'
-    );
-    if (wantNew) {
-      newChat();
-      return;
-    }
-    // Stay on current project chat
     setWorkspaceMode('chat');
     if (activeChat?.messages?.length) setView('agent');
     else if (activeChat) setView('home');
     else {
-      const withHistory = chats.find((c) => !c.archived && c.messages?.length);
-      if (withHistory) {
-        setActiveChatId(withHistory.id);
-        setView('agent');
+      const standalone = chats.find((c) => !c.archived && !c.projectId);
+      if (standalone) {
+        setActiveChatId(standalone.id);
+        setView(standalone.messages?.length ? 'agent' : 'home');
       }
     }
   };
@@ -835,9 +822,25 @@ export function ForgeProvider({ children }) {
     const text = (raw ?? composer).trim();
     if ((!text && !attachments.length) || busy) return;
     lastPromptRef.current = text;
-    // Always run against the active project's chat — never spawn a stray chat mid-build
+    // Re-attach recent reference images from this chat if the user didn't re-upload
+    let pendingAttachments = attachments;
+    if (!pendingAttachments.some((a) => a.kind === 'image')) {
+      const priorImgs = [];
+      for (const m of [...(activeChat?.messages || [])].reverse()) {
+        for (const a of m.attachments || []) {
+          if (a.kind === 'image' && a.dataUrl && !priorImgs.some((x) => x.dataUrl === a.dataUrl)) {
+            priorImgs.push(a);
+          }
+        }
+        if (priorImgs.length >= 3) break;
+      }
+      if (priorImgs.length) pendingAttachments = [...pendingAttachments, ...priorImgs];
+    }
+    // Standalone New Chat stays in Chats. Project work stays on that project's chat.
     let chatId = null;
-    if (activeProjectId) {
+    if (activeChat && !activeChat.projectId) {
+      chatId = activeChat.id;
+    } else if (activeProjectId) {
       const bound =
         chats.find((c) => c.projectId === activeProjectId && !c.archived) ||
         (activeChat?.projectId === activeProjectId ? activeChat : null);
@@ -866,12 +869,12 @@ export function ForgeProvider({ children }) {
       }
     }
     const display = text || `(attached ${attachments.map((a) => a.name).join(', ')})`;
-    const pendingAttachments = attachments;
     const userMessage = {
       id: uid(),
       role: 'user',
       content: display,
-      attachments: pendingAttachments.map((a) => ({
+      // Persist what the user attached this turn (keep dataUrls so references stay viewable)
+      attachments: attachments.map((a) => ({
         id: a.id,
         name: a.name,
         path: a.path,
@@ -888,11 +891,12 @@ export function ForgeProvider({ children }) {
         c.id === chatId
           ? {
               ...c,
-              projectId: activeProjectId || c.projectId,
-              title:
-                c.messages.length
+              projectId: c.projectId,
+              title: c.projectId
+                ? c.messages.length
                   ? c.title
-                  : activeProject?.name || display.slice(0, 42),
+                  : activeProject?.name || c.title
+                : c.title || 'New Chat',
               messages: [...c.messages, userMessage]
             }
           : c
@@ -1048,9 +1052,10 @@ export function ForgeProvider({ children }) {
         error: Boolean(result.failedDelivery)
       });
 
+      const writtenId = activeProjectIdRef.current || lastWriteProjectIdRef.current;
       setProjects((all) =>
         all.map((p) =>
-          p.id === (activeProjectIdRef.current || p.id)
+          writtenId && p.id === writtenId
             ? {
                 ...p,
                 arrangedAt: Date.now(),
@@ -1144,12 +1149,17 @@ export function ForgeProvider({ children }) {
         ? fileOverride
         : files.filter((f) => typeof f.content === 'string' && !String(f.content).startsWith('data:'));
     if (!payload.length) throw new Error('Generate or add files first.');
-    const repo = await createRepo(settings.githubToken, {
-      name,
+    const slug = String(name || activeProject?.name || 'forge-app')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '')
+      .slice(0, 80) || 'forge-app';
+    const repo = await ensureRepo(settings.githubToken, {
+      name: slug,
       description: 'Built with Forge AI Agent',
       isPrivate
     });
-    const owner = repo.owner.login;
+    const owner = repo.owner?.login || settings.githubUser?.login;
     await new Promise((r) => setTimeout(r, 800));
     await pushFiles(settings.githubToken, {
       owner,
@@ -1158,26 +1168,38 @@ export function ForgeProvider({ children }) {
       message: 'Publish from Forge AI Agent'
     });
     let live = pagesUrl(owner, repo.name);
+    let pagesReady = false;
     try {
       await enablePages(settings.githubToken, { owner, repo: repo.name, branch: repo.default_branch || 'main' });
-      const pages = await waitForPages(settings.githubToken, { owner, repo: repo.name });
+      const pages = await waitForPages(settings.githubToken, { owner, repo: repo.name, attempts: 24 });
       if (pages?.html_url) live = pages.html_url.endsWith('/') ? pages.html_url : `${pages.html_url}/`;
       await setRepoHomepage(settings.githubToken, { owner, repo: repo.name, homepage: live });
+      pagesReady = await probeLiveUrl(live);
     } catch (error) {
       showToast(`Repo published, Pages: ${error.message}`);
-      live = repo.html_url;
     }
     setProjects((all) =>
       all.map((p) =>
         p.id === (activeProjectIdRef.current || activeProjectId)
-          ? { ...p, liveUrl: live, githubRepo: { owner, name: repo.name, url: repo.html_url, live } }
+          ? {
+              ...p,
+              liveUrl: live,
+              githubRepo: { owner, name: repo.name, url: repo.html_url, live },
+              pagesReady
+            }
           : p
       )
     );
-    if (String(live).includes('github.io')) setBrowserUrl(live);
-    setGithubRepos((r) => [repo, ...r]);
-    showToast(`Live link updated: ${live}`);
-    return { repo, live };
+    // Prefer live when it actually responds; otherwise keep local Generated preview so UI stays interactive
+    if (pagesReady) setBrowserUrl(live);
+    else if (activeProject?.previewUrl) setBrowserUrl(activeProject.previewUrl);
+    setGithubRepos((r) => [repo, ...r.filter((x) => x.id !== repo.id)]);
+    showToast(
+      pagesReady
+        ? `Live link ready: ${live}`
+        : `Published — Pages still building. Preview uses local Generated until live is ready.`
+    );
+    return { repo, live, pagesReady };
   };
 
   const value = useMemo(

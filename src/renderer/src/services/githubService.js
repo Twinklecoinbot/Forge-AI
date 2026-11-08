@@ -44,6 +44,17 @@ export async function createRepo(token, { name, description, isPrivate = false }
     })
   });
 }
+/** Create repo or reuse an existing one with the same name (avoids deploy failures on re-publish). */
+export async function ensureRepo(token, { name, description, isPrivate = false }) {
+  try {
+    return await createRepo(token, { name, description, isPrivate });
+  } catch (error) {
+    const msg = String(error.message || '').toLowerCase();
+    if (!/already exists|name already|422/.test(msg)) throw error;
+    const user = await getGithubUser(token);
+    return gh(token, `/repos/${user.login}/${encodeURIComponent(name)}`);
+  }
+}
 export async function upsertFile(token, { owner, repo, path, content, message, sha }) {
   return gh(token, `/repos/${owner}/${repo}/contents/${encodeURI(path)}`, {
     method: 'PUT',
@@ -113,18 +124,42 @@ export async function enablePages(token, { owner, repo, branch = 'main' }) {
 export async function getPages(token, { owner, repo }) {
   return gh(token, `/repos/${owner}/${repo}/pages`);
 }
-export async function waitForPages(token, { owner, repo, attempts = 6 }) {
+export async function waitForPages(token, { owner, repo, attempts = 20 }) {
   let last = null;
   for (let i = 0; i < attempts; i++) {
     try {
       last = await getPages(token, { owner, repo });
-      if (last?.html_url) return last;
+      const url = last?.html_url
+        ? last.html_url.endsWith('/')
+          ? last.html_url
+          : `${last.html_url}/`
+        : pagesUrl(owner, repo);
+      // Prefer a real HTTP 200 that is not GitHub's Pages 404 shell
+      if (url && (await probeLiveUrl(url))) {
+        return { ...last, html_url: url, status: last?.status || 'built' };
+      }
+      if (last?.status === 'built' && last?.html_url && i > 10) return last;
     } catch {
-      /* not ready */
+      /* not ready yet */
     }
-    await new Promise((r) => setTimeout(r, 1000));
+    await new Promise((r) => setTimeout(r, 2000));
   }
   return last;
+}
+
+/** HEAD/GET probe — returns true when Pages returns a real page (not GitHub's 404 shell). */
+export async function probeLiveUrl(url = '') {
+  const target = String(url || '').trim();
+  if (!target || !/^https?:\/\//i.test(target)) return false;
+  try {
+    const res = await fetch(target, { method: 'GET', cache: 'no-store', redirect: 'follow' });
+    if (!res.ok) return false;
+    const text = await res.text();
+    if (/There isn't a GitHub Pages site here/i.test(text)) return false;
+    return true;
+  } catch {
+    return false;
+  }
 }
 export async function setRepoHomepage(token, { owner, repo, homepage }) {
   return gh(token, `/repos/${owner}/${repo}`, { method: 'PATCH', body: JSON.stringify({ homepage }) });

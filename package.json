@@ -58,7 +58,7 @@
           ]
         }
       ],
-      "icon": "src/renderer/public/logos/icon.ico"
+      "icon": "src/renderer/public/logos/icon.png"
     },
     "nsis": {
       "oneClick": true,
