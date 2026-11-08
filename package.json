@@ -69,7 +69,9 @@
       "artifactName": "Forge-AI-Setup.${ext}",
       "shortcutName": "Forge AI",
       "createDesktopShortcut": "always",
-      "createStartMenuShortcut": true
-    }
+      "createStartMenuShortcut": true,
+      "differentialPackage": false
+    },
+    "compression": "store"
   }
 }
